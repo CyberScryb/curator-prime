@@ -1,0 +1,97 @@
+{
+  "entities": {
+    "User": {
+      "title": "User Profile",
+      "description": "Information about the authenticated user.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "Unique identifier for the user." },
+        "displayName": { "type": "string", "description": "Display name of the user." },
+        "email": { "type": "string", "description": "Email address of the user." },
+        "photoURL": { "type": "string", "description": "URL to user's profile picture." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Timestamp when the profile was created." }
+      },
+      "required": ["uid", "email"]
+    },
+    "CollectionItem": {
+      "title": "Collection Item",
+      "description": "An antique item in the user's collection.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique identifier for the item." },
+        "userId": { "type": "string", "description": "UID of the owner." },
+        "itemName": { "type": "string", "description": "Name of the item." },
+        "category": { "type": "string", "description": "Item category." },
+        "classification": { "type": "string", "enum": ["Antique", "Vintage", "Modern", "New", "Specialty"] },
+        "era": { "type": "string", "description": "Historical era." },
+        "origin": { "type": "string", "description": "Origin or maker." },
+        "condition": { "type": "string", "description": "Textual condition description." },
+        "conditionScore": { "type": "number", "minimum": 1, "maximum": 10 },
+        "rarityScore": { "type": "number", "minimum": 1, "maximum": 10 },
+        "valuation": {
+          "type": "object",
+          "properties": {
+            "low": { "type": "number" },
+            "mid": { "type": "number" },
+            "high": { "type": "number" },
+            "currency": { "type": "string" },
+            "unit": { "type": "string" }
+          }
+        },
+        "visualHotspots": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "x": { "type": "number" },
+              "y": { "type": "number" },
+              "label": { "type": "string" },
+              "description": { "type": "string" }
+            }
+          }
+        },
+        "sellingProfile": {
+          "type": "object",
+          "properties": {
+            "listingTitle": { "type": "string" },
+            "listingDescription": { "type": "string" },
+            "keywords": { "type": "array" },
+            "recommendedVenue": { "type": "string" },
+            "pricingStrategy": { "type": "string" }
+          }
+        },
+        "forecast": {
+          "type": "object",
+          "properties": {
+            "liquidityScore": { "type": "number" },
+            "marketSentiment": { "type": "string", "enum": ["Bullish", "Bearish", "Stable"] },
+            "investmentGrade": { "type": "string", "enum": ["AAA", "AA", "A", "B", "C"] }
+          }
+        },
+        "provenance": {
+          "type": "object",
+          "properties": {
+            "digitalHash": { "type": "string" },
+            "chainStatus": { "type": "string", "enum": ["Unregistered", "Minted"] },
+            "trustTier": { "type": "string", "enum": ["Level 1 (Snapshot)", "Level 2 (Visual)", "Level 3 (Verified)"] }
+          }
+        },
+        "dateScanned": { "type": "string", "format": "date-time" },
+        "imageUrl": { "type": "string" },
+        "images": { "type": "array", "items": { "type": "string" } },
+        "userNotes": { "type": "string" }
+      },
+      "required": ["id", "userId", "itemName"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User profiles stored by UID."
+    },
+    "/items/{itemId}": {
+      "schema": "CollectionItem",
+      "description": "Collection items. Secured via userId equality check."
+    }
+  }
+}

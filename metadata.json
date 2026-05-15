@@ -1,0 +1,8 @@
+{
+  "name": "Remix: Curator Prime: Wealth \u0026 Heritage Engine",
+  "description": "Professional-grade identification, valuation, and collection management tool for antiques and collectibles.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}

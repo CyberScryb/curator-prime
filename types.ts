@@ -1,0 +1,129 @@
+
+export type ItemClassification = 'Antique' | 'Vintage' | 'Modern' | 'New' | 'Specialty';
+
+export interface VisualHotspot {
+  x: number; // 0-100 percentage
+  y: number; // 0-100 percentage
+  label: string;
+  description: string;
+  type?: 'damage' | 'signature' | 'material' | 'design';
+}
+
+export interface AppraisalResult {
+  itemName: string;
+  category: string;
+  classification: ItemClassification;
+  era: string;
+  origin: string;
+  condition: string;
+  conditionScore: number; // 1-10
+  rarityScore: number; // 1-10
+  rarityDescription: string;
+  valuation: {
+    low: number;
+    mid: number;
+    high: number;
+    currency: string;
+    unit?: string;
+  };
+  authenticationMarks?: string[]; 
+  keyFeatures?: string[];
+  visualHotspots: VisualHotspot[]; 
+  historicalContext: string; 
+  materials: string;
+  careInstructions: string;
+  comparableSales: {
+    title: string;
+    price: string;
+    date: string;
+    link: string;
+    source: string;
+  }[];
+  sellingProfile: {
+    listingTitle: string;
+    listingDescription: string;
+    keywords: string[];
+    recommendedVenue: string;
+    pricingStrategy: string;
+  };
+  forecast: {
+    liquidityScore: number; // 1-100
+    fiveYearProjection: { year: string; value: number }[];
+    marketSentiment: 'Bullish' | 'Bearish' | 'Stable';
+    investmentGrade: 'AAA' | 'AA' | 'A' | 'B' | 'C';
+  };
+  restoration: {
+    restorationPotential: string;
+    estimatedCost: number;
+    recommendedActions: string[];
+    perfectStateDescription: string;
+  };
+  provenance: {
+    digitalHash: string;
+    chainStatus: 'Unregistered' | 'Minted';
+    trustTier: 'Level 1 (Snapshot)' | 'Level 2 (Visual)' | 'Level 3 (Verified)'; // Added Trust Tier
+  };
+  forensicInsight?: string; // New field for Senior Appraiser analysis
+  authenticityAssessment?: string; // Assessment of authenticity
+  authenticityScore?: number; // 0-100 score of authenticity confidence
+  insightfulPrompts: string[];
+  confidence: number;
+  images?: string[]; // Added to store the full evidence chain
+}
+
+export interface CollectionItem extends AppraisalResult {
+  id: string;
+  userId: string; // Added for ownership
+  dateScanned: string;
+  imageUrl: string; // Primary thumbnail
+  images?: string[]; // Full evidence set
+  userNotes?: string;
+  seller?: string; // Added seller field
+}
+
+export type LensMode = 'IDENTITY' | 'MARKET' | 'FORENSICS' | 'DECIPHER' | 'RESTORE';
+
+export interface LiveAnalysisUpdate {
+  status: 'SEARCHING' | 'IDENTIFYING' | 'LOCKED';
+  shortTitle: string;
+  classification: ItemClassification;
+  quickFacts: string[]; 
+  valuationEstimate?: string; 
+  detailedNote?: string; 
+  confidence: number;
+  lensMode: LensMode;
+  coordinates?: { x: number, y: number }; 
+  hotspotDetected?: boolean;
+}
+
+export interface MarketAnalysis {
+  itemName: string;
+  trend: 'UP' | 'DOWN' | 'STABLE';
+  changePercent: string;
+  summary: string;
+  keyInsight: string;
+  demandLevel: 'High' | 'Medium' | 'Low';
+  lastUpdated: string;
+  sources?: { title: string; url: string }[];
+}
+
+export interface ChatMessage {
+  role: 'user' | 'model';
+  text: string;
+}
+
+export interface HistoricalRecord {
+  id: string;
+  category: string;
+  name: string;
+  era: string;
+  origin: string;
+  historicalSignificance: string;
+  marketTrend: 'Bullish' | 'Bearish' | 'Stable';
+  estimatedValueRange: string;
+  rarityIndicators: string[];
+  keyCharacteristics: string[];
+  forgeryMarkers: string[];
+}
+
+export type AppTab = 'SCAN' | 'COLLECTION' | 'FINANCIAL' | 'ACCOUNT' | 'ARCHIVE';

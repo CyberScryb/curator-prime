@@ -1,0 +1,99 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // 0. Master Gate: Catch-all Deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Helpers ---
+    function isSignedIn() { return request.auth != null; }
+    function isVerified() { return isSignedIn() && request.auth.token.email_verified == true; }
+    function isOwner(userId) { return isVerified() && request.auth.uid == userId; }
+    
+    function incoming() { return request.resource.data; }
+    function existing() { return resource.data; }
+    
+    function isValidId(id) { 
+        return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$'); 
+    }
+
+    // Validation Blueprint: User
+    function isValidUser(data) {
+        return data.keys().hasAll(['uid', 'email']) 
+            && data.keys().size() <= 6
+            && data.uid is string && data.uid.size() <= 128
+            && data.email is string && data.email.size() <= 256
+            && (data.get('displayName', '') is string && data.get('displayName', '').size() <= 256)
+            && (data.get('photoURL', '') is string && data.get('photoURL', '').size() <= 1024)
+            && data.uid == request.auth.uid;
+    }
+
+    // Validation Blueprint: CollectionItem
+    function isValidCollectionItem(data) {
+        return data.keys().hasAll(['id', 'userId', 'itemName'])
+            && data.id is string && data.id.size() <= 128
+            && data.userId is string && data.userId.size() <= 128
+            && data.itemName is string && data.itemName.size() <= 500
+            && (data.get('category', '') is string && data.get('category', '').size() <= 100)
+            && (data.get('classification', '') is string && data.classification in ['Antique', 'Vintage', 'Modern', 'New', 'Specialty'])
+            && (data.get('conditionScore', 5) is number && data.conditionScore >= 1 && data.conditionScore <= 10)
+            && (data.get('valuation', null) == null || (
+                data.valuation is map 
+                && data.valuation.get('currency', 'USD') is string
+                && data.valuation.get('mid', 0) is number
+            ))
+            && (data.get('provenance', null) == null || (
+                data.provenance is map
+                && data.provenance.get('chainStatus', 'Unregistered') in ['Unregistered', 'Minted']
+                && data.provenance.get('trustTier', 'Level 1 (Snapshot)') in ['Level 1 (Snapshot)', 'Level 2 (Visual)', 'Level 3 (Verified)']
+            ))
+            && (data.get('images', []) is list && data.images.size() <= 20)
+            && data.userId == request.auth.uid;
+    }
+
+    // --- Collection Gates ---
+
+    // 1. Users Collection
+    match /users/{userId} {
+        allow get: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidUser(incoming());
+        allow update: if isOwner(userId) && isValidUser(incoming()) 
+                      && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'photoURL', 'updatedAt']);
+    }
+
+    // 2. Items Collection
+    match /items/{itemId} {
+        allow get: if isVerified() && existing().userId == request.auth.uid;
+        allow list: if isVerified() && resource.data.userId == request.auth.uid;
+        
+        allow create: if isVerified() 
+                      && isValidId(itemId)
+                      && isValidCollectionItem(incoming())
+                      && incoming().id == itemId;
+                      
+        allow update: if isVerified()
+                      && existing().userId == request.auth.uid
+                      && isValidCollectionItem(incoming())
+                      && incoming().userId == existing().userId
+                      && incoming().id == existing().id
+                      && (
+                          // Action: Standard Update
+                          incoming().diff(existing()).affectedKeys().hasOnly([
+                              'itemName', 'category', 'classification', 'era', 'origin', 
+                              'condition', 'conditionScore', 'valuation', 'rarityScore', 
+                              'rarityDescription', 'authenticationMarks', 'keyFeatures', 
+                              'visualHotspots', 'historicalContext', 'materials', 
+                              'careInstructions', 'comparableSales', 'sellingProfile', 
+                              'forecast', 'restoration', 'provenance', 'dateScanned', 
+                              'imageUrl', 'images', 'userNotes', 'seller', 'updatedAt',
+                              'forensicInsight', 'authenticityAssessment', 'authenticityScore',
+                              'insightfulPrompts', 'confidence'
+                          ])
+                      );
+                      
+        allow delete: if isVerified() && existing().userId == request.auth.uid;
+    }
+  }
+}
