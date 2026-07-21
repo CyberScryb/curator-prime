@@ -282,52 +282,88 @@ export const Scanner = forwardRef<ScannerRef, ScannerProps>(({ onSave }, ref) =>
   const runAnalysis = async (images: string[]) => {
       setIsAnalyzing(true);
       setFastRequested(false);
-      setFastRunning(false);
+      setFastRunning(true);
       setLoadingLabel("Identifying your item…");
 
       const sessionId = crypto.randomUUID();
       const desc = userDescription;
       let shown = false;
-      let answerNow = false;
+      let preferFast = false;
+
+      // Flash starts NOW (not after click) so Answer now is actually faster
+      const fastPromise = analyzeItem(images, desc, { mode: "fast" })
+        .then((result) => {
+          setFastRunning(false);
+          return { ok: true as const, result };
+        })
+        .catch((error) => {
+          setFastRunning(false);
+          return { ok: false as const, error };
+        });
+
+      // Pro deep path also starts now
+      const fullPromise = analyzeItem(images, desc, { mode: "full" })
+        .then((result) => ({ ok: true as const, result }))
+        .catch((error) => ({ ok: false as const, error }));
 
       let resolveClick: (() => void) | null = null;
       const clickPromise = new Promise<void>((resolve) => {
         resolveClick = resolve;
       });
       answerNowResolver.current = () => {
-        answerNow = true;
+        preferFast = true;
         setFastRequested(true);
-        setFastRunning(true);
-        setLoadingLabel("Getting a quick answer…");
+        setLoadingLabel("Pulling quick answer…");
         resolveClick?.();
       };
 
-      // One deep Pro analysis — single call for stable, accurate IDs
-      const fullPromise = analyzeItem(images, desc, { mode: "full" })
-        .then((result) => ({ ok: true as const, result }))
-        .catch((error) => ({ ok: false as const, error }));
+      const lockIdentity = (refined: AppraisalResult, prior: AppraisalResult) => {
+        if (
+          refined.itemName &&
+          prior.itemName &&
+          refined.itemName.toLowerCase() !== prior.itemName.toLowerCase()
+        ) {
+          refined.alternateIdentifications = [
+            { name: refined.itemName, reason: "Deeper-pass alternative" },
+            ...(refined.alternateIdentifications || []),
+          ].slice(0, 4);
+          refined.itemName = prior.itemName;
+          refined.classification = prior.classification || refined.classification;
+          refined.category = prior.category || refined.category;
+        }
+        refined.analysisTier = "full";
+        return refined;
+      };
 
       try {
-        type Race =
+        // Wait until either Pro finishes OR user hits Answer now
+        type Gate =
           | { kind: "full"; payload: { ok: true; result: AppraisalResult } | { ok: false; error: unknown } }
           | { kind: "click" };
 
-        const first = await Promise.race([
+        const gate: Gate = await Promise.race([
           fullPromise.then((payload) => ({ kind: "full" as const, payload })),
           clickPromise.then(() => ({ kind: "click" as const })),
         ]);
 
-        if (first.kind === "full") {
-          // User waited for deep analysis — one stable result
-          if (first.payload.ok === false) throw first.payload.error;
-          await onSave(first.payload.result, images[0], { phase: "full", sessionId });
+        if (gate.kind === "full") {
+          // User waited — show Pro only (ignore Flash to avoid name churn)
+          if (gate.payload.ok === false) throw gate.payload.error;
+          await onSave(gate.payload.result, images[0], { phase: "full", sessionId });
           shown = true;
         } else {
-          // Answer now: Flash only, then ONE Pro refine locked to that name
-          try {
-            const quick = await analyzeItem(images, desc, { mode: "fast" });
-            setFastRunning(false);
-            await onSave(quick, images[0], { phase: "fast", sessionId });
+          // Answer now — Flash is already in flight; await it (should be near-done)
+          setLoadingLabel("Almost there…");
+          const fast = await fastPromise;
+          if (fast.ok === false) {
+            toast.info("Quick path failed — finishing deep analysis…");
+            setLoadingLabel("Identifying your item…");
+            const full = await fullPromise;
+            if (full.ok === false) throw full.error;
+            await onSave(full.result, images[0], { phase: "full", sessionId });
+            shown = true;
+          } else {
+            await onSave(fast.result, images[0], { phase: "fast", sessionId });
             shown = true;
             setIsAnalyzing(false);
             setCapturedImages([]);
@@ -335,42 +371,32 @@ export const Scanner = forwardRef<ScannerRef, ScannerProps>(({ onSave }, ref) =>
             setShowForm(false);
             toast.info("Quick answer ready — refining details…");
 
-            // Ignore the in-flight fullPromise identity; refine with prior lock
-            analyzeItem(images, desc, {
-              mode: "full",
-              priorIdentification: quick,
-            })
-              .then(async (refined) => {
-                // Hard lock name if model still drifted
-                if (
-                  refined.itemName &&
-                  quick.itemName &&
-                  refined.itemName.toLowerCase() !== quick.itemName.toLowerCase()
-                ) {
-                  refined.alternateIdentifications = [
-                    { name: refined.itemName, reason: "Deeper-pass alternative" },
-                    ...(refined.alternateIdentifications || []),
-                  ].slice(0, 4);
-                  refined.itemName = quick.itemName;
-                  refined.classification = quick.classification || refined.classification;
-                  refined.category = quick.category || refined.category;
+            // Pro refine: use in-flight full if ready, else re-call with name lock
+            fullPromise
+              .then(async (full) => {
+                try {
+                  if (full.ok) {
+                    const locked = lockIdentity({ ...full.result }, fast.result);
+                    await onSave(locked, images[0], { phase: "full", sessionId });
+                  } else {
+                    const refined = await analyzeItem(images, desc, {
+                      mode: "full",
+                      priorIdentification: fast.result,
+                    });
+                    await onSave(lockIdentity(refined, fast.result), images[0], {
+                      phase: "full",
+                      sessionId,
+                    });
+                  }
+                  toast.success("Details refined");
+                  soundManager.playLock("high");
+                } catch {
+                  toast.info("Keeping quick answer");
                 }
-                refined.analysisTier = "full";
-                await onSave(refined, images[0], { phase: "full", sessionId });
-                toast.success("Details refined");
-                soundManager.playLock("high");
               })
               .catch(() => toast.info("Keeping quick answer"));
 
             return;
-          } catch (fastErr) {
-            setFastRunning(false);
-            toast.info("Quick answer failed — finishing deep analysis…");
-            setLoadingLabel("Identifying your item…");
-            const full = await fullPromise;
-            if (full.ok === false) throw full.error;
-            await onSave(full.result, images[0], { phase: "full", sessionId });
-            shown = true;
           }
         }
 
@@ -661,8 +687,8 @@ export const Scanner = forwardRef<ScannerRef, ScannerProps>(({ onSave }, ref) =>
 
                   <p className="text-[11px] text-faint mt-4 leading-relaxed">
                     {fastRequested
-                      ? "You’ll see a quick result first, then a deeper Pro pass may update it."
-                      : "Deep analysis is more careful. Need results sooner? Tap Answer now."}
+                      ? "Quick path is already running — results should appear in a few seconds."
+                      : "Deep analysis is more careful. Need it sooner? Tap Answer now (Flash is already working)."}
                   </p>
               </div>
           </div>
