@@ -328,10 +328,47 @@ export const ItemResult: React.FC<ItemResultProps> = ({ result, imageData, onBac
               {item.era}
               {item.origin ? ` · ${item.origin}` : ''}
             </p>
+            <div className="mt-2 flex items-center gap-2">
+              <span
+                className={`text-[11px] font-bold px-2.5 py-1 rounded-full border ${
+                  confidence >= 85
+                    ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30'
+                    : confidence >= 60
+                      ? 'bg-amber-500/15 text-amber-400 border-amber-500/30'
+                      : 'bg-orange-500/15 text-orange-400 border-orange-500/30'
+                }`}
+              >
+                {confidence}% ID confidence
+                {confidence < 85 ? ' · best guess' : ''}
+              </span>
+            </div>
           </div>
         </div>
 
         <div className="px-4 space-y-4 mt-2">
+          {/* Always-on disclaimer when guessing or any AI ID */}
+          <div
+            className={`rounded-2xl border p-3.5 text-xs leading-relaxed ${
+              confidence < 85
+                ? 'border-amber-500/35 bg-amber-500/10 text-amber-100/90'
+                : 'border-line bg-elevated text-mute'
+            }`}
+          >
+            <div className="font-semibold text-ink mb-1">
+              {confidence < 85 ? 'AI best guess' : 'AI estimate'}
+            </div>
+            {(item as any).identificationDisclaimer ||
+              (confidence < 85
+                ? 'Identification is an AI best guess from this photo. Brand or model may be wrong — not a certified ID or appraisal.'
+                : 'Visual estimate from this photo. Not a certified appraisal or brand authentication.')}
+            {(item as any).brandEvidence ? (
+              <p className="mt-2 text-mute">
+                <span className="text-faint">Evidence: </span>
+                {(item as any).brandEvidence}
+              </p>
+            ) : null}
+          </div>
+
           {/* Snapshot strip */}
           <div className="grid grid-cols-3 gap-2">
             <div className="rounded-2xl border border-line bg-elevated p-3">
@@ -343,8 +380,8 @@ export const ItemResult: React.FC<ItemResultProps> = ({ result, imageData, onBac
               <div className="font-display text-lg text-ink">{item.conditionScore}/10</div>
             </div>
             <div className="rounded-2xl border border-line bg-elevated p-3">
-              <div className="text-[10px] uppercase tracking-wider text-faint mb-1">Authentic</div>
-              <div className="font-display text-lg text-ink">{authScore}%</div>
+              <div className="text-[10px] uppercase tracking-wider text-faint mb-1">ID conf.</div>
+              <div className="font-display text-lg text-ink">{confidence}%</div>
             </div>
           </div>
 
@@ -354,18 +391,13 @@ export const ItemResult: React.FC<ItemResultProps> = ({ result, imageData, onBac
                 <h2 className="text-sm font-semibold mb-2 flex items-center gap-2">
                   <Sparkles size={14} className="text-brandsoft" /> What it is
                 </h2>
-                {(item as any).brandEvidence && (
-                  <p className="text-xs text-faint mb-2 leading-relaxed border-l-2 border-brand/40 pl-2">
-                    Brand check: {(item as any).brandEvidence}
-                  </p>
-                )}
-                {(item as any).alternateIdentifications?.length > 0 && (
+                {(item.alternateIdentifications?.length ?? 0) > 0 && (
                   <div className="mb-3 rounded-xl bg-elevated border border-line p-3">
                     <div className="text-[10px] uppercase tracking-wider text-faint mb-1.5">
-                      Other possibilities
+                      Other possible IDs
                     </div>
                     <ul className="space-y-1.5">
-                      {(item as any).alternateIdentifications.slice(0, 4).map((a: any, i: number) => (
+                      {item.alternateIdentifications!.slice(0, 4).map((a, i) => (
                         <li key={i} className="text-xs text-mute">
                           <span className="text-ink font-medium">{a.name}</span>
                           {a.reason ? ` — ${a.reason}` : ''}

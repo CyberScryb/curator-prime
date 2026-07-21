@@ -157,6 +157,7 @@ app.post("/api/analyze-item", upload.array("images"), async (req, res) => {
             keyFeatures: { type: Type.ARRAY, items: { type: Type.STRING } },
             observedColors: { type: Type.ARRAY, items: { type: Type.STRING } },
             brandEvidence: { type: Type.STRING },
+            identificationDisclaimer: { type: Type.STRING },
             alternateIdentifications: {
               type: Type.ARRAY,
               items: {
@@ -273,18 +274,19 @@ app.post("/api/analyze-item", upload.array("images"), async (req, res) => {
             "authenticityScore",
             "confidence",
             "brandEvidence",
+            "identificationDisclaimer",
           ],
         },
       },
     };
 
-    // ── Pass 2: full appraisal constrained by visual facts ──
+    // ── Pass 2: full appraisal using visual facts as context ──
     const response = await generateWithFallback(ai, "identify", requestConfig);
 
     let cleanText = (response.text || "").replace(/```json|```/g, "").trim();
     const parsedResult = sanitizeResult(JSON.parse(cleanText));
 
-    // Attach pass-1 facts for client debugging / UI
+    // Attach pass-1 facts for UI
     if (visualFacts) {
       parsedResult.visualFacts = visualFacts;
       if (!parsedResult.observedColors?.length && visualFacts.observedColors) {
@@ -292,41 +294,30 @@ app.post("/api/analyze-item", upload.array("images"), async (req, res) => {
       }
     }
 
-    // Soft guard: if pass-1 rejected a brand and pass-2 still put it in the title, prefer generic type
-    try {
-      const rejected = (visualFacts?.brandCandidates || [])
-        .filter((b: any) => b && b.supported === false && b.brand)
-        .map((b: any) => String(b.brand).toLowerCase().trim())
-        .filter((b: string) => b.length >= 3);
-      const nameLower = String(parsedResult.itemName || "").toLowerCase();
-      for (const brand of rejected) {
-        if (nameLower.includes(brand)) {
-          const generic =
-            visualFacts?.objectType ||
-            parsedResult.category ||
-            "Item";
-          const colors = (
-            visualFacts?.observedColors ||
-            parsedResult.observedColors ||
-            []
-          )
-            .slice(0, 3)
-            .join("/");
-          parsedResult.itemName = colors
-            ? `${colors} ${generic} (brand unconfirmed)`
-            : `${generic} (brand unconfirmed)`;
-          parsedResult.confidence = Math.min(parsedResult.confidence ?? 50, 55);
-          parsedResult.brandEvidence = [
-            parsedResult.brandEvidence,
-            `Title adjusted: "${brand}" lacked visual support in the photo.`,
-          ]
-            .filter(Boolean)
-            .join(" ");
-          break;
-        }
+    // Normalize confidence 0–100
+    if (typeof parsedResult.confidence === "number") {
+      if (parsedResult.confidence > 0 && parsedResult.confidence <= 1) {
+        parsedResult.confidence = Math.round(parsedResult.confidence * 100);
+      } else {
+        parsedResult.confidence = Math.round(
+          Math.min(100, Math.max(0, parsedResult.confidence))
+        );
       }
-    } catch {
-      /* non-fatal */
+    } else {
+      parsedResult.confidence = 50;
+    }
+
+    // Ensure a disclaimer always exists (guesses are OK — must be labeled)
+    const conf = parsedResult.confidence;
+    if (!parsedResult.identificationDisclaimer) {
+      parsedResult.identificationDisclaimer =
+        conf >= 85
+          ? "AI visual estimate based on this photo. Not a certified appraisal or brand authentication."
+          : "Best-guess identification from this photo. Brand/model may be uncertain — treat as an AI estimate, not a confirmed ID.";
+    }
+    if (conf < 85 && !/guess|estimate|uncertain|not (a |an )?(certified|confirmed)/i.test(parsedResult.identificationDisclaimer)) {
+      parsedResult.identificationDisclaimer +=
+        " Confidence is moderate/low — this may be a best guess.";
     }
 
     const dataString = `${parsedResult.itemName || ""}${parsedResult.era || ""}${parsedResult.classification || ""}${imageParts[0].inlineData.data}`;

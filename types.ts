@@ -70,6 +70,11 @@ export interface AppraisalResult {
   insightfulPrompts: string[];
   confidence: number;
   images?: string[]; // Added to store the full evidence chain
+  /** Plain-English note that ID may be an AI guess */
+  identificationDisclaimer?: string;
+  brandEvidence?: string;
+  observedColors?: string[];
+  alternateIdentifications?: { name: string; reason: string }[];
 }
 
 export interface CollectionItem extends AppraisalResult {
