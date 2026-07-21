@@ -132,24 +132,24 @@ app.post("/api/analyze-item", upload.array("images"), async (req, res) => {
       inlineData: { data: f.buffer.toString("base64"), mimeType: f.mimetype },
     }));
 
-    // ── Pass 1: OCR / labels (ALWAYS — even in fast mode; this is the specialty) ──
-    // Fast uses Flash OCR; full uses identify/Pro chain for harder-to-read text
+    // ── Pass 1: OCR only on FULL path (Pro). Fast path = one Flash call for speed. ──
     let visualFacts: any = null;
-    try {
-      const ocrTier = mode === "fast" ? "flash" : "identify";
-      const factsRes = await generateWithFallback(ai, ocrTier as any, {
-        contents: {
-          parts: [...imageParts, { text: OCR_PASS_PROMPT }],
-        },
-        config: {
-          responseMimeType: "application/json",
-          temperature: 0.1,
-        },
-      });
-      const factsText = (factsRes.text || "").replace(/```json|```/g, "").trim();
-      visualFacts = JSON.parse(factsText);
-    } catch (factsErr: any) {
-      console.warn("OCR pass failed (continuing):", factsErr?.message);
+    if (mode === "full") {
+      try {
+        const factsRes = await generateWithFallback(ai, "identify", {
+          contents: {
+            parts: [...imageParts, { text: OCR_PASS_PROMPT }],
+          },
+          config: {
+            responseMimeType: "application/json",
+            temperature: 0.1,
+          },
+        });
+        const factsText = (factsRes.text || "").replace(/```json|```/g, "").trim();
+        visualFacts = JSON.parse(factsText);
+      } catch (factsErr: any) {
+        console.warn("OCR pass failed (continuing):", factsErr?.message);
+      }
     }
 
     const prompt = getAppraisalPrompt(
@@ -158,7 +158,7 @@ app.post("/api/analyze-item", upload.array("images"), async (req, res) => {
       visualFacts ? JSON.stringify(visualFacts, null, 2) : undefined
     );
 
-    // Fast = Flash appraisal; Full = Pro appraisal (both still OCR-constrained)
+    // Fast = single Flash shot; Full = Pro (after OCR)
     const analysisTier = mode === "fast" ? "flash" : "identify";
 
     const requestConfig = {
