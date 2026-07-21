@@ -314,38 +314,26 @@ app.post("/api/analyze-item", upload.array("images"), async (req, res) => {
     let cleanText = (response.text || "").replace(/```json|```/g, "").trim();
     let parsedResult = sanitizeResult(JSON.parse(cleanText));
 
-    // If refining, hard-lock core identity from prior when model still drifted
+    // Prior ID is context only — Pro may correct a wrong quick answer (e.g. logo visible)
     if (priorIdentification) {
       try {
         const prior = JSON.parse(priorIdentification);
         if (prior?.itemName && parsedResult.itemName) {
-          const priorBrand = String(prior.itemName).split(/\s+/)[0] || "";
           const nameChanged =
             String(parsedResult.itemName).toLowerCase() !==
             String(prior.itemName).toLowerCase();
-          // Keep prior name unless first token of prior is clearly wrong vs authentication marks
-          if (nameChanged && priorBrand.length >= 2) {
-            const marks = [
-              ...(parsedResult.authenticationMarks || []),
-              ...(prior.authenticationMarks || []),
-            ]
-              .join(" ")
-              .toLowerCase();
-            const priorInMarks = marks.includes(priorBrand.toLowerCase());
-            const newNameDropsBrand = !String(parsedResult.itemName)
-              .toLowerCase()
-              .includes(priorBrand.toLowerCase());
-            if (priorInMarks || newNameDropsBrand) {
-              parsedResult.alternateIdentifications = [
-                {
-                  name: parsedResult.itemName,
-                  reason: "Pro alternative during refine",
-                },
-                ...(parsedResult.alternateIdentifications || []),
-              ].slice(0, 4);
-              parsedResult.itemName = prior.itemName;
-              if (prior.classification) parsedResult.classification = prior.classification;
-              if (prior.category) parsedResult.category = prior.category;
+          if (nameChanged) {
+            parsedResult.alternateIdentifications = [
+              {
+                name: prior.itemName,
+                reason: "Earlier quick answer (superseded by deeper pass)",
+              },
+              ...(parsedResult.alternateIdentifications || []),
+            ].slice(0, 5);
+            // Keep Pro's corrected name — do not force prior back
+            if (!parsedResult.brandEvidence) {
+              parsedResult.brandEvidence =
+                "Deeper analysis revised the identification from the quick answer.";
             }
           }
         }

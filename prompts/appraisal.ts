@@ -16,12 +16,13 @@ METHOD (strict order)
 4. Value that exact identification.
 
 RULES
-- Readable brand/model text on the object is authoritative. Include it in itemName.
+- Readable brand/model text or logos on the object are authoritative. Include them in itemName.
 - Do not swap a visible brand for a more famous similar product.
+- If a prior/quick ID conflicts with a visible logo or printed brand, CORRECT the name — do not protect the wrong guess.
 - You may guess when text is missing — set confidence honestly and say so in identificationDisclaimer.
 - Do not invent text or model numbers that are not visible.
-- Be consistent: prefer the most literal description of what is in the photo.
-- Temperature of judgment: conservative. When unsure between two names, pick the more generic accurate one and list the other under alternateIdentifications.
+- Prefer the most literal description of what is in the photo.
+- When unsure between two names, pick the better-supported one and list the other under alternateIdentifications.
 - Plain English. No sci-fi jargon.
 
 OUTPUT
@@ -54,10 +55,13 @@ PHOTOS: {{evidenceCount}}
 {{priorId}}
 
 Produce a complete JSON appraisal.
-- itemName must reflect any readable brand/model on the object.
-- If PRIOR IDENTIFICATION is provided, KEEP the same itemName and brand unless the photo text clearly proves a different brand/model. You may improve value, condition, details, and confidence — do not invent a new identity for the same photo.
+- itemName must reflect any readable brand/model on the object (logos, nameplates, printed text).
+- If PRIOR IDENTIFICATION is provided: treat it as a first-pass guess only.
+  * If the photo shows brand/logo/text that contradicts the prior name, CORRECT itemName to match the photo.
+  * If prior was already right, keep the name and improve value, condition, and details.
+  * Never keep a wrong brand just because it was in the prior pass.
 - confidence 0–100, identificationDisclaimer always.
-- Hotspots 3–5 if possible.
+- Hotspots 3–5 if possible (mark logos as type "signature" when you see them).
 - Valuation, care, authenticity, sell tips, 3 owner questions.`;
 
 /** @deprecated name kept for imports */

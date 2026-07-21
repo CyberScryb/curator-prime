@@ -317,22 +317,41 @@ export const Scanner = forwardRef<ScannerRef, ScannerProps>(({ onSave }, ref) =>
         resolveClick?.();
       };
 
-      const lockIdentity = (refined: AppraisalResult, prior: AppraisalResult) => {
+      /**
+       * Pro is authoritative. If Pro corrects the name (e.g. reads a logo Flash missed),
+       * keep Pro's identity and list the quick name as an alternate.
+       */
+      const applyProOverFlash = (pro: AppraisalResult, flash: AppraisalResult): AppraisalResult => {
+        const out = { ...pro, analysisTier: "full" as const };
+        const proName = (pro.itemName || "").trim();
+        const flashName = (flash.itemName || "").trim();
         if (
-          refined.itemName &&
-          prior.itemName &&
-          refined.itemName.toLowerCase() !== prior.itemName.toLowerCase()
+          proName &&
+          flashName &&
+          proName.toLowerCase() !== flashName.toLowerCase()
         ) {
-          refined.alternateIdentifications = [
-            { name: refined.itemName, reason: "Deeper-pass alternative" },
-            ...(refined.alternateIdentifications || []),
-          ].slice(0, 4);
-          refined.itemName = prior.itemName;
-          refined.classification = prior.classification || refined.classification;
-          refined.category = prior.category || refined.category;
+          out.alternateIdentifications = [
+            { name: flashName, reason: "Earlier quick answer (may have been wrong)" },
+            ...(pro.alternateIdentifications || []),
+          ].slice(0, 5);
+          // Prefer Pro's name — it is the deeper pass and should fix logo/brand errors
+          out.itemName = proName;
+          if (typeof pro.confidence === "number" && typeof flash.confidence === "number") {
+            // If Pro is less confident, still allow rename but note it
+            if (pro.confidence + 5 < flash.confidence) {
+              out.identificationDisclaimer =
+                (out.identificationDisclaimer || "") +
+                ` Deeper analysis revised the name from “${flashName}”.`;
+            } else {
+              out.identificationDisclaimer =
+                (out.identificationDisclaimer || "") +
+                ` Corrected from quick answer “${flashName}”.`;
+            }
+          }
         }
-        refined.analysisTier = "full";
-        return refined;
+        // Keep images from the scan session
+        out.images = flash.images?.length ? flash.images : pro.images;
+        return out;
       };
 
       try {
@@ -369,26 +388,34 @@ export const Scanner = forwardRef<ScannerRef, ScannerProps>(({ onSave }, ref) =>
             setCapturedImages([]);
             setUserDescription("");
             setShowForm(false);
-            toast.info("Quick answer ready — refining details…");
+            toast.info("Quick answer ready — Pro is double-checking…");
 
-            // Pro refine: use in-flight full if ready, else re-call with name lock
+            // Pro may CORRECT name/brand if logo/text was missed by Flash
             fullPromise
               .then(async (full) => {
                 try {
+                  let refined: AppraisalResult;
                   if (full.ok) {
-                    const locked = lockIdentity({ ...full.result }, fast.result);
-                    await onSave(locked, images[0], { phase: "full", sessionId });
+                    refined = applyProOverFlash(full.result, fast.result);
                   } else {
-                    const refined = await analyzeItem(images, desc, {
+                    // Re-run Pro with prior as context only (not a hard lock)
+                    const proOnly = await analyzeItem(images, desc, {
                       mode: "full",
                       priorIdentification: fast.result,
                     });
-                    await onSave(lockIdentity(refined, fast.result), images[0], {
-                      phase: "full",
-                      sessionId,
-                    });
+                    refined = applyProOverFlash(proOnly, fast.result);
                   }
-                  toast.success("Details refined");
+
+                  const nameChanged =
+                    (refined.itemName || "").toLowerCase() !==
+                    (fast.result.itemName || "").toLowerCase();
+
+                  await onSave(refined, images[0], { phase: "full", sessionId });
+                  if (nameChanged) {
+                    toast.success(`Corrected to: ${refined.itemName}`);
+                  } else {
+                    toast.success("Details refined");
+                  }
                   soundManager.playLock("high");
                 } catch {
                   toast.info("Keeping quick answer");
