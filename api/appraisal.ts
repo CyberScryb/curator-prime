@@ -10,15 +10,15 @@ YOUR JOB
 2) Estimate fair market value and give practical notes (condition, authenticity, care, sell).
 
 METHOD (strict order)
-1. Read all text on the object first: brand, model, logos, stamps, labels.
+1. Read all text on the object first: brand, model, logos, stamps, labels, nameplates.
 2. Identify product type from shape/function.
 3. Combine into a stable, specific itemName (Brand + type + model when known).
 4. Value that exact identification.
 
 RULES
-- Readable brand/model text or logos on the object are authoritative. Include them in itemName.
-- Do not swap a visible brand for a more famous similar product.
-- If a prior/quick ID conflicts with a visible logo or printed brand, CORRECT the name — do not protect the wrong guess.
+- Readable brand/model text or logos on the object ALWAYS win. itemName must use them.
+- Never replace a visible brand with a more famous similar product (shape alone is not enough).
+- If a prior/quick ID conflicts with a visible logo or printed brand, you MUST CORRECT itemName and brand fields.
 - You may guess when text is missing — set confidence honestly and say so in identificationDisclaimer.
 - Do not invent text or model numbers that are not visible.
 - Prefer the most literal description of what is in the photo.
@@ -28,24 +28,29 @@ RULES
 OUTPUT
 - confidence: 0–100 for identification certainty
 - identificationDisclaimer: always present
-- brandEvidence: what you saw (quote visible text or state none readable)
+- brandEvidence: quote visible logo/text when present, or state none readable
 - valuation for the identified object`;
 
-export const OCR_PASS_PROMPT = `Extract readable text from the product photo for identification.
+export const OCR_PASS_PROMPT = `Read the product photo carefully. Extract ONLY text and logos you can actually see.
+
+Priority: brand logos, brand wordmarks, model numbers, nameplates, stamped/printed labels.
 
 Return JSON:
 {
-  "objectType": "product category",
+  "objectType": "product category (e.g. rotary tool, lamp, watch)",
   "observedColors": ["colors on the object"],
-  "visibleTextOrLogos": ["exact words/logos on the object"],
-  "likelyBrandFromText": "brand from text or empty",
-  "likelyModelFromText": "model from text or empty",
-  "shapeAndForm": "brief",
+  "visibleTextOrLogos": ["exact words or logo names visible on the object"],
+  "likelyBrandFromText": "brand from visible text/logo, or empty string if none",
+  "likelyModelFromText": "model from visible text, or empty string if none",
+  "shapeAndForm": "brief shape description",
   "materialsGuess": "brief",
-  "notes": "limitations"
+  "notes": "any readability limits"
 }
 
-Only include text you can actually read. Empty is better than invented.`;
+Rules:
+- If a brand logo or name is visible, put it in likelyBrandFromText and visibleTextOrLogos.
+- Do NOT invent famous brands from shape alone.
+- Empty strings are better than guesses.`;
 
 export const APPRAISAL_USER_V1 = `Appraise this object from the photo(s).
 
@@ -55,11 +60,12 @@ PHOTOS: {{evidenceCount}}
 {{priorId}}
 
 Produce a complete JSON appraisal.
-- itemName must reflect any readable brand/model on the object (logos, nameplates, printed text).
-- If PRIOR IDENTIFICATION is provided: treat it as a first-pass guess only.
-  * If the photo shows brand/logo/text that contradicts the prior name, CORRECT itemName to match the photo.
+- itemName MUST include any readable brand/model from logos, nameplates, or printed text.
+- If VISIBLE TEXT / FACTS lists a brand, that brand is the correct one for itemName.
+- If PRIOR IDENTIFICATION is provided: it is only a first-pass guess.
+  * If the photo (or VISIBLE TEXT) shows a different brand/logo/name, CORRECT itemName now.
   * If prior was already right, keep the name and improve value, condition, and details.
-  * Never keep a wrong brand just because it was in the prior pass.
+  * Never protect a wrong brand just because it was in the prior pass.
 - confidence 0–100, identificationDisclaimer always.
 - Hotspots 3–5 if possible (mark logos as type "signature" when you see them).
 - Valuation, care, authenticity, sell tips, 3 owner questions.`;
@@ -90,60 +96,83 @@ export function getAppraisalPrompt(
     .replace(
       '{{priorId}}',
       priorIdentification
-        ? `PRIOR IDENTIFICATION (keep unless photo text clearly contradicts):\n${priorIdentification}`
+        ? `PRIOR IDENTIFICATION (first-pass guess only — CORRECT if logo/brand/text disagrees):\n${priorIdentification}`
         : ''
     );
 }
 
 /**
- * Only force brand into the name when OCR clearly found a brand string
- * and the model omitted it entirely. Does not invent brands.
+ * Force brand into the name when OCR clearly found a brand/logo string
+ * and the model omitted it or used a different brand. Does not invent brands.
  */
 export function enforceReadableBrand(result: any, visualFacts: any): any {
   if (!result || !visualFacts) return result;
 
-  const brand = String(visualFacts.likelyBrandFromText || "").trim();
+  let brand = String(visualFacts.likelyBrandFromText || "").trim();
+
+  // Fallback: first logo-like token from visible text if brand field empty
+  if (brand.length < 2 && Array.isArray(visualFacts.visibleTextOrLogos)) {
+    for (const t of visualFacts.visibleTextOrLogos) {
+      const s = String(t || "").trim();
+      if (s.length >= 2 && /[a-zA-Z]{2,}/.test(s) && s.split(/\s+/).length <= 3) {
+        brand = s;
+        break;
+      }
+    }
+  }
+
   if (brand.length < 2 || !/[a-zA-Z]{2,}/.test(brand)) return result;
 
   // Avoid forcing generic words
   const blocklist = new Set([
     "the", "and", "made", "china", "model", "type", "size", "with", "for", "use",
     "power", "tool", "tools", "series", "professional", "heavy", "duty",
+    "item", "object", "product", "unknown",
   ]);
   if (blocklist.has(brand.toLowerCase())) return result;
 
   const name = String(result.itemName || "");
-  if (name.toLowerCase().includes(brand.toLowerCase())) {
+  const brandLower = brand.toLowerCase();
+  if (name.toLowerCase().includes(brandLower)) {
     if (typeof result.confidence === "number" && result.confidence < 72) {
       result.confidence = Math.max(result.confidence, 72);
     }
     return result;
   }
 
-  // Only force if brand also appears in visibleTextOrLogos (double confirmation)
+  // Prefer double confirmation via visibleTextOrLogos, but accept likelyBrand alone
   const texts: string[] = Array.isArray(visualFacts.visibleTextOrLogos)
     ? visualFacts.visibleTextOrLogos.map((t: any) => String(t).toLowerCase())
     : [];
-  if (!texts.some((t) => t.includes(brand.toLowerCase()))) {
-    return result;
-  }
+  const brandConfirmed =
+    texts.some((t) => t.includes(brandLower)) ||
+    String(visualFacts.likelyBrandFromText || "").toLowerCase() === brandLower;
+  if (!brandConfirmed) return result;
 
   const objectType = visualFacts.objectType || result.category || "item";
   const model = String(visualFacts.likelyModelFromText || "").trim();
   const previous = name;
 
   result.alternateIdentifications = [
-    { name: previous, reason: "Name before applying readable brand label" },
+    {
+      name: previous || "Unnamed",
+      reason: "Name before applying visible logo/brand from photo",
+    },
     ...(Array.isArray(result.alternateIdentifications)
       ? result.alternateIdentifications
       : []),
   ].slice(0, 4);
 
   result.itemName = [brand, objectType, model].filter(Boolean).join(" ");
-  result.brandEvidence = `Readable brand on object: "${brand}". Applied to title.`;
+  result.brandEvidence = `Readable brand/logo on object: "${brand}". Corrected title to match photo.`;
+  result.identificationDisclaimer =
+    (result.identificationDisclaimer || "") +
+    (previous
+      ? ` Title updated from “${previous}” to match visible brand “${brand}”.`
+      : ` Title set from visible brand “${brand}”.`);
   result.confidence = Math.max(
     typeof result.confidence === "number" ? result.confidence : 50,
-    78
+    80
   );
   result.authenticationMarks = Array.from(
     new Set([...(result.authenticationMarks || []), brand])

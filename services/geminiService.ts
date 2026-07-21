@@ -31,7 +31,7 @@ export type AnalyzeMode = "fast" | "full";
 export type AnalyzeOptions = {
   mode?: AnalyzeMode;
   signal?: AbortSignal;
-  /** When refining, pass prior ID so Pro doesn't invent a new name */
+  /** Quick-pass ID for Pro to verify/correct (not a hard lock — logos win) */
   priorIdentification?: Partial<AppraisalResult> | Record<string, unknown>;
 };
 

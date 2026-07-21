@@ -6,6 +6,8 @@ import crypto from "crypto";
 // Colocated with the serverless function so Vercel bundles them into /var/task
 import {
   APPRAISAL_SYSTEM_V1,
+  OCR_PASS_PROMPT,
+  enforceReadableBrand,
   getAppraisalPrompt,
 } from "./appraisal.js";
 import { getLiveAnalysisPrompt } from "./liveAnalysis.js";
@@ -115,9 +117,9 @@ app.get("/api/health", (_req, res) => {
 });
 
 // Analyze Item
-// mode=fast  → one Flash call (quick, consistent enough)
-// mode=full  → one Pro call (accurate default)
-// priorIdentification JSON → refine without renaming (keeps results stable)
+// mode=fast  → one Flash call (quick)
+// mode=full  → OCR (logo/text) + Pro; may correct a prior/quick ID
+// priorIdentification JSON → first-pass guess only; Pro may rename if logo/brand differs
 app.post("/api/analyze-item", upload.array("images"), async (req, res) => {
   try {
     const files = (req.files as Express.Multer.File[]) || [];
@@ -140,11 +142,33 @@ app.post("/api/analyze-item", upload.array("images"), async (req, res) => {
       inlineData: { data: f.buffer.toString("base64"), mimeType: f.mimetype },
     }));
 
-    // Single-pass analysis for consistency (multi-pass was inventing different IDs each run)
+    // Full/Pro: read logos & printed brand first so we can force-correct wrong names
+    let visualFacts: any = null;
+    if (mode === "full") {
+      try {
+        const ocrResponse = await generateWithFallback(ai, "flash", {
+          contents: {
+            parts: [...imageParts, { text: OCR_PASS_PROMPT }],
+          },
+          config: {
+            responseMimeType: "application/json",
+            temperature: 0,
+          },
+        });
+        const ocrText = (ocrResponse.text || "").replace(/```json|```/g, "").trim();
+        if (ocrText) visualFacts = JSON.parse(ocrText);
+      } catch (ocrErr: any) {
+        console.warn(
+          "OCR/logo pass failed (continuing without):",
+          String(ocrErr?.message || ocrErr).slice(0, 160)
+        );
+      }
+    }
+
     const prompt = getAppraisalPrompt(
       files.length,
       userDescription,
-      undefined,
+      visualFacts ? JSON.stringify(visualFacts) : undefined,
       priorIdentification
     );
 
@@ -308,13 +332,32 @@ app.post("/api/analyze-item", upload.array("images"), async (req, res) => {
       },
     };
 
-    // Single model call — more stable IDs than multi-pass / multi-model races
     const response = await generateWithFallback(ai, analysisTier as any, requestConfig);
 
     let cleanText = (response.text || "").replace(/```json|```/g, "").trim();
     let parsedResult = sanitizeResult(JSON.parse(cleanText));
 
-    // Prior ID is context only — Pro may correct a wrong quick answer (e.g. logo visible)
+    // Hard-enforce OCR brand/logo when the model still used the wrong name
+    if (visualFacts) {
+      parsedResult = enforceReadableBrand(parsedResult, visualFacts);
+      // Surface OCR hits for the UI
+      if (
+        visualFacts.likelyBrandFromText &&
+        !parsedResult.brandEvidence
+      ) {
+        parsedResult.brandEvidence = `Visible on object: "${visualFacts.likelyBrandFromText}"`;
+      }
+      if (Array.isArray(visualFacts.visibleTextOrLogos) && visualFacts.visibleTextOrLogos.length) {
+        parsedResult.authenticationMarks = Array.from(
+          new Set([
+            ...(parsedResult.authenticationMarks || []),
+            ...visualFacts.visibleTextOrLogos.map(String).filter(Boolean),
+          ])
+        );
+      }
+    }
+
+    // Prior ID is context only — keep Pro's correction when name differs
     if (priorIdentification) {
       try {
         const prior = JSON.parse(priorIdentification);
@@ -326,15 +369,17 @@ app.post("/api/analyze-item", upload.array("images"), async (req, res) => {
             parsedResult.alternateIdentifications = [
               {
                 name: prior.itemName,
-                reason: "Earlier quick answer (superseded by deeper pass)",
+                reason: "Earlier quick answer (superseded — logo/brand check)",
               },
               ...(parsedResult.alternateIdentifications || []),
             ].slice(0, 5);
-            // Keep Pro's corrected name — do not force prior back
             if (!parsedResult.brandEvidence) {
               parsedResult.brandEvidence =
                 "Deeper analysis revised the identification from the quick answer.";
             }
+            parsedResult.identificationDisclaimer =
+              (parsedResult.identificationDisclaimer || "") +
+              ` Corrected from quick answer “${prior.itemName}”.`;
           }
         }
       } catch {
@@ -383,7 +428,7 @@ app.post("/api/analyze-item", upload.array("images"), async (req, res) => {
     };
     parsedResult.modelUsed = getModelAlias(analysisTier as any);
     parsedResult.analysisTier = mode;
-    parsedResult.pipeline = "single-pass-stable-v3";
+    parsedResult.pipeline = mode === "full" ? "ocr-pro-correct-v4" : "flash-fast-v4";
     res.json(parsedResult);
   } catch (error: any) {
     console.error("Analysis Error:", error);

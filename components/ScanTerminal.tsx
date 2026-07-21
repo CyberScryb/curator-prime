@@ -388,40 +388,48 @@ export const Scanner = forwardRef<ScannerRef, ScannerProps>(({ onSave }, ref) =>
             setCapturedImages([]);
             setUserDescription("");
             setShowForm(false);
-            toast.info("Quick answer ready — Pro is double-checking…");
+            toast.info("Quick answer ready — Pro is double-checking logos & name…");
 
-            // Pro may CORRECT name/brand if logo/text was missed by Flash
-            fullPromise
-              .then(async (full) => {
+            // Always refine WITH the quick ID so Pro can correct wrong brands when logo is visible
+            (async () => {
+              try {
+                let refined: AppraisalResult | null = null;
+
+                // Dedicated correction pass: prior is a guess; OCR+Pro may rename
                 try {
-                  let refined: AppraisalResult;
+                  const proCorrect = await analyzeItem(images, desc, {
+                    mode: "full",
+                    priorIdentification: fast.result,
+                  });
+                  refined = applyProOverFlash(proCorrect, fast.result);
+                } catch {
+                  // Fall back to parallel Pro if correction call fails
+                  const full = await fullPromise;
                   if (full.ok) {
                     refined = applyProOverFlash(full.result, fast.result);
-                  } else {
-                    // Re-run Pro with prior as context only (not a hard lock)
-                    const proOnly = await analyzeItem(images, desc, {
-                      mode: "full",
-                      priorIdentification: fast.result,
-                    });
-                    refined = applyProOverFlash(proOnly, fast.result);
                   }
-
-                  const nameChanged =
-                    (refined.itemName || "").toLowerCase() !==
-                    (fast.result.itemName || "").toLowerCase();
-
-                  await onSave(refined, images[0], { phase: "full", sessionId });
-                  if (nameChanged) {
-                    toast.success(`Corrected to: ${refined.itemName}`);
-                  } else {
-                    toast.success("Details refined");
-                  }
-                  soundManager.playLock("high");
-                } catch {
-                  toast.info("Keeping quick answer");
                 }
-              })
-              .catch(() => toast.info("Keeping quick answer"));
+
+                if (!refined) {
+                  toast.info("Keeping quick answer");
+                  return;
+                }
+
+                const nameChanged =
+                  (refined.itemName || "").toLowerCase() !==
+                  (fast.result.itemName || "").toLowerCase();
+
+                await onSave(refined, images[0], { phase: "full", sessionId });
+                if (nameChanged) {
+                  toast.success(`Corrected to: ${refined.itemName}`);
+                } else {
+                  toast.success("Details refined");
+                }
+                soundManager.playLock("high");
+              } catch {
+                toast.info("Keeping quick answer");
+              }
+            })();
 
             return;
           }

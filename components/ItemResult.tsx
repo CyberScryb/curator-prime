@@ -350,7 +350,7 @@ export const ItemResult: React.FC<ItemResultProps> = ({ result, imageData, onBac
             <div className="rounded-2xl border border-brand/35 bg-brand/10 p-3.5 text-xs text-brandsoft flex items-start gap-2">
               <Loader2 size={14} className="animate-spin shrink-0 mt-0.5" />
               <div>
-                <div className="font-semibold text-ink mb-0.5">Quick answer — Pro is double-checking</div>
+                <div className="font-semibold text-ink mb-0.5">Quick answer — Pro is checking logos and name</div>
                 If a logo or brand name is visible, the deeper pass may correct the name and details when it finishes.
               </div>
             </div>
