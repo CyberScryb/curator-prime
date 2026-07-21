@@ -292,28 +292,36 @@ app.post("/api/analyze-item", upload.array("images"), async (req, res) => {
       }
     }
 
-    // Soft guard: if model still named a brand that pass-1 rejected, prefer generic type
+    // Soft guard: if pass-1 rejected a brand and pass-2 still put it in the title, prefer generic type
     try {
       const rejected = (visualFacts?.brandCandidates || [])
         .filter((b: any) => b && b.supported === false && b.brand)
-        .map((b: any) => String(b.brand).toLowerCase());
+        .map((b: any) => String(b.brand).toLowerCase().trim())
+        .filter((b: string) => b.length >= 3);
       const nameLower = String(parsedResult.itemName || "").toLowerCase();
       for (const brand of rejected) {
-        if (brand.length >= 3 && nameLower.includes(brand)) {
+        if (nameLower.includes(brand)) {
           const generic =
             visualFacts?.objectType ||
             parsedResult.category ||
-            "Unbranded item";
-          const colors = (visualFacts?.observedColors || parsedResult.observedColors || [])
+            "Item";
+          const colors = (
+            visualFacts?.observedColors ||
+            parsedResult.observedColors ||
+            []
+          )
             .slice(0, 3)
             .join("/");
           parsedResult.itemName = colors
             ? `${colors} ${generic} (brand unconfirmed)`
             : `${generic} (brand unconfirmed)`;
           parsedResult.confidence = Math.min(parsedResult.confidence ?? 50, 55);
-          parsedResult.brandEvidence =
-            (parsedResult.brandEvidence || "") +
-            ` Corrected: "${brand}" was not supported by visible colors/logos.`;
+          parsedResult.brandEvidence = [
+            parsedResult.brandEvidence,
+            `Title adjusted: "${brand}" lacked visual support in the photo.`,
+          ]
+            .filter(Boolean)
+            .join(" ");
           break;
         }
       }
