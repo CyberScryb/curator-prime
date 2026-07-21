@@ -32,41 +32,43 @@ const getAI = () => {
 };
 
 /**
- * Model routing (Google Gemini via @google/genai):
+ * Model routing (Google Gemini via @google/genai)
  *
- * - identify: best vision model for "what is this?" (default 3.1 Pro when custom key exists)
- * - flash: cheap/fast for visual pre-pass, live lens, chat
- * - pro: same family as identify (used as alias)
+ * gemini-2.5-pro is blocked for many new API keys ("no longer available to new users").
+ * Default stack uses Gemini 3.x only.
  *
- * Override anytime with env:
- *   IDENTIFICATION_MODEL=gemini-3.1-pro-preview | gemini-2.5-pro | ...
- *   FLASH_MODEL=gemini-3.1-flash-preview | gemini-2.5-flash | ...
- *
- * Note: there is no separate "3.5 flash" ID in this stack unless Google ships it —
- * set FLASH_MODEL to whatever model name your key has access to.
+ * Env overrides (optional):
+ *   IDENTIFICATION_MODEL  — main vision ID (default: gemini-3.1-pro-preview)
+ *   FLASH_MODEL           — cheap/fast (default: gemini-3.1-flash-preview)
  */
+const MODEL_ID_PRIMARY =
+  process.env.IDENTIFICATION_MODEL ||
+  process.env.CUSTOM_IDENTIFY_MODEL ||
+  "gemini-3.1-pro-preview";
+
+const MODEL_FLASH_PRIMARY =
+  process.env.FLASH_MODEL || "gemini-3.1-flash-preview";
+
+// Never fall back to gemini-2.5-pro (404 for new users)
+const MODEL_ID_CHAIN = [
+  MODEL_ID_PRIMARY,
+  "gemini-3.1-pro-preview",
+  "gemini-3-pro-preview",
+  MODEL_FLASH_PRIMARY,
+  "gemini-3.1-flash-preview",
+  "gemini-2.5-flash",
+].filter((m, i, arr) => m && arr.indexOf(m) === i);
+
+const MODEL_FLASH_CHAIN = [
+  MODEL_FLASH_PRIMARY,
+  "gemini-3.1-flash-preview",
+  "gemini-2.5-flash",
+  MODEL_ID_PRIMARY,
+].filter((m, i, arr) => m && arr.indexOf(m) === i);
+
 const getModelAlias = (tier: "pro" | "flash" | "identify") => {
-  const hasCustomKey = !!process.env.CUSTOM_GEMINI_API_KEY;
-
-  if (tier === "identify" || tier === "pro") {
-    return (
-      process.env.IDENTIFICATION_MODEL ||
-      process.env.CUSTOM_IDENTIFY_MODEL ||
-      (hasCustomKey ? "gemini-3.1-pro-preview" : "gemini-2.5-pro")
-    );
-  }
-
-  // flash
-  return (
-    process.env.FLASH_MODEL ||
-    (hasCustomKey ? "gemini-3.1-flash-preview" : "gemini-2.5-flash")
-  );
-};
-
-const getFallbackModel = (tier: "pro" | "flash" | "identify") => {
-  // Stable fallbacks if a preview model 404s or rate-limits
-  if (tier === "flash") return "gemini-2.5-flash";
-  return "gemini-2.5-pro";
+  if (tier === "flash") return MODEL_FLASH_CHAIN[0];
+  return MODEL_ID_CHAIN[0];
 };
 
 async function generateWithFallback(
@@ -74,14 +76,26 @@ async function generateWithFallback(
   tier: "pro" | "flash" | "identify",
   request: any
 ) {
-  const primary = getModelAlias(tier);
-  try {
-    return await ai.models.generateContent({ model: primary, ...request });
-  } catch (primaryError: any) {
-    const fallback = getFallbackModel(tier);
-    console.warn(`Model ${primary} failed, falling back to ${fallback}:`, primaryError?.message);
-    return await ai.models.generateContent({ model: fallback, ...request });
+  const chain = tier === "flash" ? MODEL_FLASH_CHAIN : MODEL_ID_CHAIN;
+  let lastError: any;
+
+  for (const model of chain) {
+    try {
+      return await ai.models.generateContent({ model, ...request });
+    } catch (err: any) {
+      lastError = err;
+      const msg = String(err?.message || err || "");
+      const unavailable =
+        err?.status === 404 ||
+        err?.code === 404 ||
+        /NOT_FOUND|no longer available|not found|not supported/i.test(msg);
+      console.warn(`Model ${model} failed${unavailable ? " (unavailable)" : ""}:`, msg.slice(0, 200));
+      if (!unavailable && chain.indexOf(model) === chain.length - 1) break;
+      // try next model on 404 / unavailable; also continue on other errors until chain ends
+    }
   }
+
+  throw lastError || new Error("All Gemini models failed");
 }
 
 // Sanitize appraisal data to conform to Firestore security rules
@@ -358,8 +372,7 @@ app.post("/api/analyze-live", upload.single("image"), async (req, res) => {
 
     const ai = getAI();
     const prompt = getLiveAnalysisPrompt(lensMode, previousContext);
-    const response = await ai.models.generateContent({
-      model: getModelAlias("flash"),
+    const response = await generateWithFallback(ai, "flash", {
       contents: { parts: [{ inlineData: { data: file.buffer.toString("base64"), mimeType: file.mimetype } }, { text: prompt }] },
       config: { responseMimeType: "application/json" },
     });
@@ -367,7 +380,7 @@ app.post("/api/analyze-live", upload.single("image"), async (req, res) => {
     let cleanText = (response.text || "").replace(/```json|```/g, "").trim();
     res.json(JSON.parse(cleanText));
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: error.message || String(error) });
   }
 });
 
@@ -388,10 +401,12 @@ Key data: ${JSON.stringify({
   care: itemContext?.careInstructions,
 })}.
 Rules: Answer clearly in plain English. Be specific and actionable. Short paragraphs or bullets. No sci-fi jargon. If uncertain, say so.`;
-    const result = await ai.models.generateContent({ model: getModelAlias("flash"), contents: { parts: [{ text: systemContext + "\n\nUser Question: " + question }] } });
+    const result = await generateWithFallback(ai, "flash", {
+      contents: { parts: [{ text: systemContext + "\n\nUser Question: " + question }] },
+    });
     res.json({ text: result.text });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: error.message || String(error) });
   }
 });
 
@@ -400,8 +415,7 @@ app.post("/api/market-analysis", async (req, res) => {
   try {
     const { query } = req.body;
     const ai = getAI();
-    const result = await ai.models.generateContent({
-      model: getModelAlias("flash"),
+    const result = await generateWithFallback(ai, "flash", {
       contents: { parts: [{ text: `Real-time market analysis for: "${query}". JSON output.` }] },
       config: {
         tools: [{ googleSearch: {} }],

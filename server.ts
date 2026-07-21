@@ -34,11 +34,15 @@ async function startServer() {
 
   // Helper to resolve model dynamically based on key presence. 
   // Free tier key might not be allowlisted for 3.1 preview.
+  // gemini-2.5-pro is unavailable to many new API keys — use 3.x only
   const getModelAlias = (tier: 'pro' | 'flash') => {
-    const hasCustomKey = !!process.env.CUSTOM_GEMINI_API_KEY;
-    if (tier === 'pro') return hasCustomKey ? 'gemini-3.1-pro-preview' : 'gemini-2.5-pro';
-    return hasCustomKey ? 'gemini-3.1-flash-preview' : 'gemini-2.5-flash';
+    if (tier === 'pro') {
+      return process.env.IDENTIFICATION_MODEL || 'gemini-3.1-pro-preview';
+    }
+    return process.env.FLASH_MODEL || 'gemini-3.1-flash-preview';
   };
+  const getFallbackModel = (tier: 'pro' | 'flash') =>
+    tier === 'pro' ? 'gemini-3.1-flash-preview' : 'gemini-2.5-flash';
 
   // --- API Routes ---
 
