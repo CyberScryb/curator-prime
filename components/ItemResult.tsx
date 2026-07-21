@@ -354,6 +354,26 @@ export const ItemResult: React.FC<ItemResultProps> = ({ result, imageData, onBac
                 <h2 className="text-sm font-semibold mb-2 flex items-center gap-2">
                   <Sparkles size={14} className="text-brandsoft" /> What it is
                 </h2>
+                {(item as any).brandEvidence && (
+                  <p className="text-xs text-faint mb-2 leading-relaxed border-l-2 border-brand/40 pl-2">
+                    Brand check: {(item as any).brandEvidence}
+                  </p>
+                )}
+                {(item as any).alternateIdentifications?.length > 0 && (
+                  <div className="mb-3 rounded-xl bg-elevated border border-line p-3">
+                    <div className="text-[10px] uppercase tracking-wider text-faint mb-1.5">
+                      Other possibilities
+                    </div>
+                    <ul className="space-y-1.5">
+                      {(item as any).alternateIdentifications.slice(0, 4).map((a: any, i: number) => (
+                        <li key={i} className="text-xs text-mute">
+                          <span className="text-ink font-medium">{a.name}</span>
+                          {a.reason ? ` — ${a.reason}` : ''}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
                 <p className="text-sm text-mute leading-relaxed">
                   {item.historicalContext || 'No historical notes available.'}
                 </p>

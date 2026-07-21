@@ -4,7 +4,11 @@ import multer from "multer";
 import { GoogleGenAI, Type } from "@google/genai";
 import crypto from "crypto";
 // Colocated with the serverless function so Vercel bundles them into /var/task
-import { APPRAISAL_SYSTEM_V1, getAppraisalPrompt } from "./appraisal.js";
+import {
+  APPRAISAL_SYSTEM_V1,
+  getAppraisalPrompt,
+  VISUAL_FACTS_PROMPT,
+} from "./appraisal.js";
 import { getLiveAnalysisPrompt } from "./liveAnalysis.js";
 
 // Vercel serverless: long Gemini vision calls need more than default 10s
@@ -27,16 +31,44 @@ const getAI = () => {
   return new GoogleGenAI({ apiKey });
 };
 
-const getModelAlias = (tier: "pro" | "flash") => {
+/**
+ * Model routing (Google Gemini via @google/genai):
+ * - Identification: Gemini 2.5 Pro by default (strong vision, fewer flashy wrong brands).
+ * - Override with env IDENTIFICATION_MODEL (e.g. gemini-3.1-pro-preview).
+ * - Live / chat: Flash for speed.
+ */
+const getModelAlias = (tier: "pro" | "flash" | "identify") => {
+  if (tier === "identify") {
+    return (
+      process.env.IDENTIFICATION_MODEL ||
+      process.env.CUSTOM_IDENTIFY_MODEL ||
+      "gemini-2.5-pro"
+    );
+  }
   const hasCustomKey = !!process.env.CUSTOM_GEMINI_API_KEY;
   if (tier === "pro") return hasCustomKey ? "gemini-3.1-pro-preview" : "gemini-2.5-pro";
   return hasCustomKey ? "gemini-3.1-flash-preview" : "gemini-2.5-flash";
 };
 
-// Fallback model names (stable versions)
-const getFallbackModel = (tier: "pro" | "flash") => {
+const getFallbackModel = (tier: "pro" | "flash" | "identify") => {
+  if (tier === "identify") return "gemini-2.5-pro";
   return tier === "pro" ? "gemini-2.5-pro" : "gemini-2.5-flash";
 };
+
+async function generateWithFallback(
+  ai: ReturnType<typeof getAI>,
+  tier: "pro" | "flash" | "identify",
+  request: any
+) {
+  const primary = getModelAlias(tier);
+  try {
+    return await ai.models.generateContent({ model: primary, ...request });
+  } catch (primaryError: any) {
+    const fallback = getFallbackModel(tier);
+    console.warn(`Model ${primary} failed, falling back to ${fallback}:`, primaryError?.message);
+    return await ai.models.generateContent({ model: fallback, ...request });
+  }
+}
 
 // Sanitize appraisal data to conform to Firestore security rules
 const sanitizeResult = (data: any): any => {
@@ -55,7 +87,7 @@ app.get("/api/health", (_req, res) => {
   res.json({ status: "ok" });
 });
 
-// Analyze Item (Multipart)
+// Analyze Item (Multipart) — two-pass: visual facts → constrained appraisal
 app.post("/api/analyze-item", upload.array("images"), async (req, res) => {
   try {
     const files = (req.files as Express.Multer.File[]) || [];
@@ -63,55 +95,239 @@ app.post("/api/analyze-item", upload.array("images"), async (req, res) => {
     if (!files.length) return res.status(400).json({ error: "No images provided" });
 
     const ai = getAI();
-    const prompt = getAppraisalPrompt(files.length, userDescription);
     const imageParts = files.map((f) => ({
       inlineData: { data: f.buffer.toString("base64"), mimeType: f.mimetype },
     }));
+
+    // ── Pass 1: extract only what is visible (blocks brand hallucination) ──
+    let visualFacts: any = null;
+    try {
+      const factsRes = await generateWithFallback(ai, "identify", {
+        contents: {
+          parts: [...imageParts, { text: VISUAL_FACTS_PROMPT }],
+        },
+        config: {
+          responseMimeType: "application/json",
+          temperature: 0.2,
+        },
+      });
+      const factsText = (factsRes.text || "").replace(/```json|```/g, "").trim();
+      visualFacts = JSON.parse(factsText);
+    } catch (factsErr: any) {
+      console.warn("Visual facts pass failed (continuing):", factsErr?.message);
+    }
+
+    const prompt = getAppraisalPrompt(
+      files.length,
+      userDescription,
+      visualFacts ? JSON.stringify(visualFacts, null, 2) : undefined
+    );
 
     const requestConfig = {
       contents: { parts: [...imageParts, { text: prompt }] },
       config: {
         systemInstruction: APPRAISAL_SYSTEM_V1,
         responseMimeType: "application/json",
+        temperature: 0.35,
         responseSchema: {
           type: Type.OBJECT,
           properties: {
-            itemName: { type: Type.STRING }, category: { type: Type.STRING },
-            classification: { type: Type.STRING, enum: ["Antique","Vintage","Modern","New","Specialty"] },
-            era: { type: Type.STRING }, origin: { type: Type.STRING },
-            condition: { type: Type.STRING }, conditionScore: { type: Type.NUMBER },
-            rarityScore: { type: Type.NUMBER }, rarityDescription: { type: Type.STRING },
-            valuation: { type: Type.OBJECT, properties: { low: { type: Type.NUMBER }, mid: { type: Type.NUMBER }, high: { type: Type.NUMBER }, currency: { type: Type.STRING } } },
+            itemName: { type: Type.STRING },
+            category: { type: Type.STRING },
+            classification: {
+              type: Type.STRING,
+              enum: ["Antique", "Vintage", "Modern", "New", "Specialty"],
+            },
+            era: { type: Type.STRING },
+            origin: { type: Type.STRING },
+            condition: { type: Type.STRING },
+            conditionScore: { type: Type.NUMBER },
+            rarityScore: { type: Type.NUMBER },
+            rarityDescription: { type: Type.STRING },
+            valuation: {
+              type: Type.OBJECT,
+              properties: {
+                low: { type: Type.NUMBER },
+                mid: { type: Type.NUMBER },
+                high: { type: Type.NUMBER },
+                currency: { type: Type.STRING },
+              },
+            },
             authenticationMarks: { type: Type.ARRAY, items: { type: Type.STRING } },
             keyFeatures: { type: Type.ARRAY, items: { type: Type.STRING } },
-            visualHotspots: { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { x: { type: Type.NUMBER }, y: { type: Type.NUMBER }, label: { type: Type.STRING }, description: { type: Type.STRING }, type: { type: Type.STRING, enum: ["damage","signature","material","design"] } }, required: ["x","y","label","description"] } },
-            historicalContext: { type: Type.STRING }, materials: { type: Type.STRING }, careInstructions: { type: Type.STRING },
-            comparableSales: { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { title: { type: Type.STRING }, price: { type: Type.STRING }, date: { type: Type.STRING }, link: { type: Type.STRING }, source: { type: Type.STRING } } } },
-            sellingProfile: { type: Type.OBJECT, properties: { listingTitle: { type: Type.STRING }, listingDescription: { type: Type.STRING }, keywords: { type: Type.ARRAY, items: { type: Type.STRING } }, recommendedVenue: { type: Type.STRING }, pricingStrategy: { type: Type.STRING } } },
-            forecast: { type: Type.OBJECT, properties: { liquidityScore: { type: Type.NUMBER }, marketSentiment: { type: Type.STRING, enum: ["Bullish","Bearish","Stable"] }, investmentGrade: { type: Type.STRING, enum: ["AAA","AA","A","B","C"] }, fiveYearProjection: { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { year: { type: Type.STRING }, value: { type: Type.NUMBER } } } } } },
-            restoration: { type: Type.OBJECT, properties: { restorationPotential: { type: Type.STRING }, estimatedCost: { type: Type.NUMBER }, recommendedActions: { type: Type.ARRAY, items: { type: Type.STRING } }, perfectStateDescription: { type: Type.STRING } } },
-            provenance: { type: Type.OBJECT, properties: { trustTier: { type: Type.STRING, enum: ["Level 1 (Snapshot)","Level 2 (Visual)","Level 3 (Verified)"] } } },
-            forensicInsight: { type: Type.STRING }, authenticityAssessment: { type: Type.STRING },
-            authenticityScore: { type: Type.NUMBER }, insightfulPrompts: { type: Type.ARRAY, items: { type: Type.STRING } },
+            observedColors: { type: Type.ARRAY, items: { type: Type.STRING } },
+            brandEvidence: { type: Type.STRING },
+            alternateIdentifications: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  name: { type: Type.STRING },
+                  reason: { type: Type.STRING },
+                },
+                required: ["name", "reason"],
+              },
+            },
+            visualHotspots: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  x: { type: Type.NUMBER },
+                  y: { type: Type.NUMBER },
+                  label: { type: Type.STRING },
+                  description: { type: Type.STRING },
+                  type: {
+                    type: Type.STRING,
+                    enum: ["damage", "signature", "material", "design"],
+                  },
+                },
+                required: ["x", "y", "label", "description"],
+              },
+            },
+            historicalContext: { type: Type.STRING },
+            materials: { type: Type.STRING },
+            careInstructions: { type: Type.STRING },
+            comparableSales: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  title: { type: Type.STRING },
+                  price: { type: Type.STRING },
+                  date: { type: Type.STRING },
+                  link: { type: Type.STRING },
+                  source: { type: Type.STRING },
+                },
+              },
+            },
+            sellingProfile: {
+              type: Type.OBJECT,
+              properties: {
+                listingTitle: { type: Type.STRING },
+                listingDescription: { type: Type.STRING },
+                keywords: { type: Type.ARRAY, items: { type: Type.STRING } },
+                recommendedVenue: { type: Type.STRING },
+                pricingStrategy: { type: Type.STRING },
+              },
+            },
+            forecast: {
+              type: Type.OBJECT,
+              properties: {
+                liquidityScore: { type: Type.NUMBER },
+                marketSentiment: {
+                  type: Type.STRING,
+                  enum: ["Bullish", "Bearish", "Stable"],
+                },
+                investmentGrade: {
+                  type: Type.STRING,
+                  enum: ["AAA", "AA", "A", "B", "C"],
+                },
+                fiveYearProjection: {
+                  type: Type.ARRAY,
+                  items: {
+                    type: Type.OBJECT,
+                    properties: {
+                      year: { type: Type.STRING },
+                      value: { type: Type.NUMBER },
+                    },
+                  },
+                },
+              },
+            },
+            restoration: {
+              type: Type.OBJECT,
+              properties: {
+                restorationPotential: { type: Type.STRING },
+                estimatedCost: { type: Type.NUMBER },
+                recommendedActions: { type: Type.ARRAY, items: { type: Type.STRING } },
+                perfectStateDescription: { type: Type.STRING },
+              },
+            },
+            provenance: {
+              type: Type.OBJECT,
+              properties: {
+                trustTier: {
+                  type: Type.STRING,
+                  enum: [
+                    "Level 1 (Snapshot)",
+                    "Level 2 (Visual)",
+                    "Level 3 (Verified)",
+                  ],
+                },
+              },
+            },
+            forensicInsight: { type: Type.STRING },
+            authenticityAssessment: { type: Type.STRING },
+            authenticityScore: { type: Type.NUMBER },
+            insightfulPrompts: { type: Type.ARRAY, items: { type: Type.STRING } },
             confidence: { type: Type.NUMBER },
           },
-          required: ["itemName","valuation","forecast","restoration","insightfulPrompts","authenticityAssessment","authenticityScore"],
+          required: [
+            "itemName",
+            "valuation",
+            "forecast",
+            "restoration",
+            "insightfulPrompts",
+            "authenticityAssessment",
+            "authenticityScore",
+            "confidence",
+            "brandEvidence",
+          ],
         },
       },
     };
 
-    let response;
-    try {
-      response = await ai.models.generateContent({ model: getModelAlias("pro"), ...requestConfig });
-    } catch (primaryError: any) {
-      console.warn(`Primary model failed (${getModelAlias("pro")}), falling back to ${getFallbackModel("pro")}:`, primaryError.message);
-      response = await ai.models.generateContent({ model: getFallbackModel("pro"), ...requestConfig });
-    }
+    // ── Pass 2: full appraisal constrained by visual facts ──
+    const response = await generateWithFallback(ai, "identify", requestConfig);
 
     let cleanText = (response.text || "").replace(/```json|```/g, "").trim();
     const parsedResult = sanitizeResult(JSON.parse(cleanText));
+
+    // Attach pass-1 facts for client debugging / UI
+    if (visualFacts) {
+      parsedResult.visualFacts = visualFacts;
+      if (!parsedResult.observedColors?.length && visualFacts.observedColors) {
+        parsedResult.observedColors = visualFacts.observedColors;
+      }
+    }
+
+    // Soft guard: if model still named a brand that pass-1 rejected, prefer generic type
+    try {
+      const rejected = (visualFacts?.brandCandidates || [])
+        .filter((b: any) => b && b.supported === false && b.brand)
+        .map((b: any) => String(b.brand).toLowerCase());
+      const nameLower = String(parsedResult.itemName || "").toLowerCase();
+      for (const brand of rejected) {
+        if (brand.length >= 3 && nameLower.includes(brand)) {
+          const generic =
+            visualFacts?.objectType ||
+            parsedResult.category ||
+            "Unbranded item";
+          const colors = (visualFacts?.observedColors || parsedResult.observedColors || [])
+            .slice(0, 3)
+            .join("/");
+          parsedResult.itemName = colors
+            ? `${colors} ${generic} (brand unconfirmed)`
+            : `${generic} (brand unconfirmed)`;
+          parsedResult.confidence = Math.min(parsedResult.confidence ?? 50, 55);
+          parsedResult.brandEvidence =
+            (parsedResult.brandEvidence || "") +
+            ` Corrected: "${brand}" was not supported by visible colors/logos.`;
+          break;
+        }
+      }
+    } catch {
+      /* non-fatal */
+    }
+
     const dataString = `${parsedResult.itemName || ""}${parsedResult.era || ""}${parsedResult.classification || ""}${imageParts[0].inlineData.data}`;
-    parsedResult.provenance = { ...parsedResult.provenance, digitalHash: "0x" + crypto.createHash("sha256").update(dataString).digest("hex") };
+    parsedResult.provenance = {
+      ...parsedResult.provenance,
+      digitalHash:
+        "0x" + crypto.createHash("sha256").update(dataString).digest("hex"),
+    };
+    parsedResult.modelUsed = getModelAlias("identify");
     res.json(parsedResult);
   } catch (error: any) {
     console.error("Analysis Error:", error);
