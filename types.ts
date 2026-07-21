@@ -57,6 +57,7 @@ export interface AppraisalResult {
     estimatedCost: number;
     recommendedActions: string[];
     perfectStateDescription: string;
+    simulationImage?: string;
   };
   provenance: {
     digitalHash: string;

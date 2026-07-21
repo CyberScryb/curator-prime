@@ -545,17 +545,16 @@ export const Scanner = forwardRef<ScannerRef, ScannerProps>(({ onSave }, ref) =>
               <div className="text-center relative">
                   <div className="flex items-baseline justify-center gap-4 mb-4">
                       <div className="h-[1px] w-12 bg-gradient-to-r from-transparent to-orange-500/40"></div>
-                      <h3 className="font-display text-4xl text-white tracking-[0.5em] drop-shadow-[0_0_20px_rgba(255,255,255,0.4)] uppercase italic">Synthesis</h3>
+                      <h3 className="font-display text-3xl text-white tracking-tight">Analyzing…</h3>
                       <div className="h-[1px] w-12 bg-gradient-to-l from-transparent to-orange-500/40"></div>
                   </div>
                   
                   <div className="relative flex flex-col items-center">
                       <div className="flex items-center gap-3 px-6 py-2 bg-zinc-950 border border-white/5 rounded-full backdrop-blur-xl">
                           <Zap size={12} className="text-orange-500 animate-pulse" />
-                          <div className="text-orange-500 font-mono text-[10px] uppercase tracking-[0.4em] font-bold">
-                              {/* Decryption Text Animation */}
-                              <span className="inline-block animate-[text_decrypt_3s_infinite] overflow-hidden whitespace-nowrap">
-                                  Processing Visual Vectors...
+                          <div className="text-orange-400 text-xs font-medium">
+                              <span className="inline-block">
+                                  Identifying item, value &amp; authenticity
                               </span>
                           </div>
                       </div>
@@ -667,13 +666,18 @@ export const Scanner = forwardRef<ScannerRef, ScannerProps>(({ onSave }, ref) =>
             {/* Top Controls: Mode Switcher & Sound */}
             <div className="absolute top-0 left-0 right-0 p-6 pt-[calc(20px+env(safe-area-inset-top))] flex justify-between items-center z-40 bg-gradient-to-b from-black/90 to-transparent pointer-events-none">
                 <div className="pointer-events-auto flex gap-4">
-                    {(['MANUAL', 'AUTHENTICATE', 'LIVE', 'PASSPORT'] as ScanMode[]).map(m => (
+                    {([
+                        { id: 'MANUAL' as ScanMode, label: 'Quick' },
+                        { id: 'PASSPORT' as ScanMode, label: '3 angles' },
+                        { id: 'AUTHENTICATE' as ScanMode, label: 'Notes' },
+                        { id: 'LIVE' as ScanMode, label: 'Live' },
+                    ]).map(m => (
                         <button 
-                            key={m}
-                            onClick={() => switchMode(m)}
-                            className={`text-[10px] font-bold transition-colors z-10 tracking-widest uppercase ${scanMode === m ? 'text-orange-500 drop-shadow-[0_0_8px_rgba(249,115,22,0.8)]' : 'text-white/40 hover:text-white/70'}`}
+                            key={m.id}
+                            onClick={() => switchMode(m.id)}
+                            className={`text-[11px] font-semibold transition-colors z-10 px-2 py-1 rounded-full ${scanMode === m.id ? 'text-brandsoft bg-black/50' : 'text-white/50 hover:text-white/80'}`}
                         >
-                            {m === 'AUTHENTICATE' ? 'AUTH' : m}
+                            {m.label}
                         </button>
                     ))}
                 </div>
@@ -690,7 +694,7 @@ export const Scanner = forwardRef<ScannerRef, ScannerProps>(({ onSave }, ref) =>
                 className={`pointer-events-auto h-12 px-5 flex items-center gap-3 rounded-full border transition-all duration-300 ${showForm || userDescription ? 'bg-white text-black border-white shadow-[0_10px_30px_rgba(255,255,255,0.2)]' : 'bg-black/60 backdrop-blur-3xl text-zinc-400 border-white/5 hover:bg-zinc-800'}`}
                 >
                 <FileText size={18} />
-                <span className="text-[9px] font-bold uppercase tracking-[0.2em]">{userDescription ? 'Dossier_Attached' : 'Add_Context'}</span>
+                <span className="text-[10px] font-semibold">{userDescription ? 'Notes added' : 'Add notes'}</span>
                 </button>
  
                 {showForm && (

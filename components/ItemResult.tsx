@@ -1,19 +1,34 @@
-
-import React, { useState, useEffect, useRef } from 'react';
-import { AppraisalResult, VisualHotspot } from '../types';
-import { askCurator, generateDynamicPrompts, executeItemTool, generateRestorationPreview } from '../services/geminiService';
-import { ArrowLeft, X, Send, Sparkles, Box, Zap, Info, Layers, Crosshair, FileText, Wrench, ShieldCheck, ShieldAlert, Shield, Users, TrendingUp, RefreshCw, MessageSquare, Terminal, Tag, Scroll, Globe, Triangle, Rocket, Share2, Printer, Copy, CheckCircle, Loader2, FlaskConical, History, PenTool, UserSearch, Database, ChevronRight, Lock as LucideLock, Fingerprint, Cpu, Activity, Image as ImageIcon } from 'lucide-react';
-import { Button } from './Button';
-import { soundManager } from '../services/soundService';
+import React, { useEffect, useMemo, useState } from 'react';
+import {
+  AppraisalResult,
+  VisualHotspot,
+} from '../types';
+import {
+  askCurator,
+  executeItemTool,
+  generateDynamicPrompts,
+  generateRestorationPreview,
+} from '../services/geminiService';
+import {
+  ArrowLeft,
+  MessageCircle,
+  Copy,
+  Check,
+  Loader2,
+  ShieldCheck,
+  DollarSign,
+  Sparkles,
+  Wrench,
+  Send,
+  Share2,
+  Printer,
+  ChevronRight,
+  RefreshCw,
+} from 'lucide-react';
 import Markdown from 'react-markdown';
-import { motion, AnimatePresence } from 'motion/react';
 import { toast } from './Toast';
-import { CuratorsInsight } from './CuratorsInsight';
-import { HotspotCanvas } from './ItemResult/HotspotCanvas';
-import { ValuationPanel } from './ItemResult/ValuationPanel';
-import { RestorationPreview } from './ItemResult/RestorationPreview';
+import { soundManager } from '../services/soundService';
 import { AskCuratorChat } from './ItemResult/AskCuratorChat';
-import { MarketComparables } from './ItemResult/MarketComparables';
 
 interface ItemResultProps {
   result: AppraisalResult;
@@ -22,1010 +37,731 @@ interface ItemResultProps {
   onSave: (result: AppraisalResult) => void;
 }
 
-const TypewriterText: React.FC<{ text: string; delay?: number }> = ({ text, delay = 0 }) => {
-  const [displayed, setDisplayed] = useState('');
-  useEffect(() => {
-    let i = 0;
-    const startTimeout = setTimeout(() => {
-        const interval = setInterval(() => {
-            setDisplayed(text.substring(0, i));
-            i++;
-            if (i > text.length) clearInterval(interval);
-        }, 10); 
-        return () => clearInterval(interval);
-    }, delay);
-    return () => clearTimeout(startTimeout);
-  }, [text, delay]);
-  return <span>{displayed}<span className="cursor-blink text-blue-500">_</span></span>;
-};
+type TabId = 'overview' | 'value' | 'authenticity' | 'care' | 'sell';
 
-type ViewMode = 'EXPLORE' | 'DETAILS' | 'RESTORE' | 'TOOLS' | 'PROVENANCE' | 'FINANCIAL';
-type ExportMode = 'NONE' | 'DOSSIER' | 'MARKETPLACE';
+const TABS: { id: TabId; label: string }[] = [
+  { id: 'overview', label: 'Overview' },
+  { id: 'value', label: 'Value' },
+  { id: 'authenticity', label: 'Authenticity' },
+  { id: 'care', label: 'Care' },
+  { id: 'sell', label: 'Sell' },
+];
+
+function money(n: number, currency = 'USD') {
+  try {
+    return new Intl.NumberFormat(undefined, {
+      style: 'currency',
+      currency: currency || 'USD',
+      maximumFractionDigits: 0,
+    }).format(n || 0);
+  } catch {
+    return `$${Math.round(n || 0).toLocaleString()}`;
+  }
+}
+
+function confPct(c: number) {
+  if (!Number.isFinite(c)) return 0;
+  return c > 0 && c <= 1 ? Math.round(c * 100) : Math.round(Math.min(100, Math.max(0, c)));
+}
 
 export const ItemResult: React.FC<ItemResultProps> = ({ result, imageData, onBack, onSave }) => {
-  const [currentResult, setCurrentResult] = useState(result);
+  const [item, setItem] = useState(result);
+  const [tab, setTab] = useState<TabId>('overview');
+  const [activeSpot, setActiveSpot] = useState<VisualHotspot | null>(null);
   const [showChat, setShowChat] = useState(false);
-  const [chatInput, setChatInput] = useState("");
-  const [chatHistory, setChatHistory] = useState<{role:string, text:string}[]>([]);
-  const [isChatLoading, setIsChatLoading] = useState(false);
-  
-  const [activeHotspot, setActiveHotspot] = useState<VisualHotspot | null>(null);
-  const [discoveredHotspots, setDiscoveredHotspots] = useState<Set<number>>(new Set());
-  const [activeRepairVector, setActiveRepairVector] = useState<number | null>(null);
-  const [viewMode, setViewMode] = useState<ViewMode>('EXPLORE');
-  const [exportMode, setExportMode] = useState<ExportMode>('NONE');
-  
-  const [activeTool, setActiveTool] = useState<string | null>(null);
-  const [toolOutput, setToolOutput] = useState<string | null>(null);
-  const [isToolLoading, setIsToolLoading] = useState(false);
+  const [chatInput, setChatInput] = useState('');
+  const [chatHistory, setChatHistory] = useState<{ role: string; text: string }[]>([]);
+  const [chatLoading, setChatLoading] = useState(false);
+  const [prompts, setPrompts] = useState<string[]>(result.insightfulPrompts?.slice(0, 3) || []);
+  const [copied, setCopied] = useState(false);
+  const [toolBusy, setToolBusy] = useState<string | null>(null);
+  const [toolOut, setToolOut] = useState<string | null>(null);
+  const [restoreImg, setRestoreImg] = useState<string | null>(
+    result.restoration?.simulationImage || null
+  );
+  const [restoreBusy, setRestoreBusy] = useState(false);
+  const [listing, setListing] = useState<{ title: string; body: string } | null>(null);
 
-  const [scrollY, setScrollY] = useState(0);
+  useEffect(() => {
+    setItem(result);
+    setPrompts(result.insightfulPrompts?.slice(0, 3) || []);
+  }, [result]);
 
-  // Listing Generation State
-  const [generatedListing, setGeneratedListing] = useState<{title: string, body: string} | null>(null);
+  const photo = item.images?.[0] || imageData;
+  const confidence = confPct(item.confidence);
+  const authScore = confPct(item.authenticityScore ?? item.confidence);
 
-  // Restoration Preview State
-  const [restorationPreviewImg, setRestorationPreviewImg] = useState<string | null>(null);
-  const [isGeneratingPreview, setIsGeneratingPreview] = useState(false);
+  const mid = item.valuation?.mid ?? 0;
+  const low = item.valuation?.low ?? 0;
+  const high = item.valuation?.high ?? 0;
+  const currency = item.valuation?.currency || 'USD';
 
-  const displayImage = currentResult.images && currentResult.images.length > 0 ? currentResult.images[0] : imageData;
-  const [activeEvidenceImage, setActiveEvidenceImage] = useState(displayImage);
-  const [prompts, setPrompts] = useState<string[]>(result.insightfulPrompts || []);
-  const [isCyclingPrompts, setIsCyclingPrompts] = useState(false);
+  const trustLabel = useMemo(() => {
+    const t = item.provenance?.trustTier || 'Level 1 (Snapshot)';
+    if (t.includes('3')) return 'Strong evidence';
+    if (t.includes('2')) return 'Good evidence';
+    return 'Single photo';
+  }, [item.provenance?.trustTier]);
 
-  const printRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => { setCurrentResult(result); }, [result]);
-  useEffect(() => { soundManager.playLock(currentResult.rarityScore > 7 ? 'high' : 'standard'); }, []);
-
-  const handleGeneratePreview = async () => {
-      soundManager.playClick();
-      triggerHaptic('transition');
-      setIsGeneratingPreview(true);
-      try {
-          const preview = await generateRestorationPreview(currentResult);
-          if (preview) {
-              setRestorationPreviewImg(preview);
-              setCurrentResult(prev => ({
-                  ...prev,
-                  restoration: {
-                      ...prev.restoration,
-                      simulationImage: preview
-                  }
-              }));
-              soundManager.playLock('high');
-              toast.success("Optimal State Synthesized");
-          } else {
-              toast.error("Generation Failed");
-          }
-      } catch (e: any) {
-          toast.error(e.message || "Generation Error");
-      }
-      setIsGeneratingPreview(false);
-  };
-
-  const triggerHaptic = (pattern: 'click'|'transition') => {
-      if (typeof navigator !== 'undefined' && navigator.vibrate) {
-          navigator.vibrate(pattern === 'click' ? 20 : [30, 50, 30]);
-      }
-  };
-
-  const toggleHotspot = (idx: number, spot: VisualHotspot) => {
-    soundManager.playClick();
-    triggerHaptic('click');
-    if (activeHotspot === spot) {
-        setActiveHotspot(null);
-    } else {
-        setActiveHotspot(spot);
-        if (!discoveredHotspots.has(idx)) {
-            const newDiscovered = new Set(discoveredHotspots);
-            newDiscovered.add(idx);
-            setDiscoveredHotspots(newDiscovered);
-            soundManager.playLock('standard');
-            if (typeof navigator !== 'undefined' && navigator.vibrate) navigator.vibrate([100, 50, 100]);
-            toast.info(`Optical Link Established: VEC_0${idx + 1}`);
-        }
+  const copyText = async (text: string, label = 'Copied') => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      toast.success(label);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      toast.error('Could not copy');
     }
   };
 
   const handleChat = async (text?: string) => {
-    const q = text || chatInput;
+    const q = (text || chatInput).trim();
     if (!q) return;
-    setChatInput("");
-    if (!showChat) setShowChat(true);
-    soundManager.playClick();
-    triggerHaptic('transition');
-    setChatHistory(prev => [...prev, { role: 'user', text: q }]);
-    setIsChatLoading(true);
+    setChatInput('');
+    setShowChat(true);
+    setChatHistory((h) => [...h, { role: 'user', text: q }]);
+    setChatLoading(true);
     try {
-        const ans = await askCurator(currentResult, q);
-        setChatHistory(prev => [...prev, { role: 'model', text: ans }]);
-    } catch {
-        setChatHistory(prev => [...prev, { role: 'model', text: "Signal Lost." }]);
+      const ans = await askCurator(item, q);
+      setChatHistory((h) => [...h, { role: 'model', text: ans }]);
+    } catch (e: any) {
+      setChatHistory((h) => [
+        ...h,
+        { role: 'model', text: e?.message || 'Sorry — chat is unavailable right now.' },
+      ]);
+    } finally {
+      setChatLoading(false);
     }
-    setIsChatLoading(false);
-    soundManager.playLock();
   };
 
-  const executeTool = async (toolId: string, customPrompt?: string) => {
-      setActiveTool(toolId);
-      setToolOutput(null);
-      setIsToolLoading(true);
-      soundManager.playClick();
-      triggerHaptic('click');
-      try {
-          const output = await executeItemTool(currentResult, customPrompt || toolId);
-          setToolOutput(output);
-          soundManager.playLock();
-      } catch (e) {
-          setToolOutput("Module Offline.");
-      } finally { setIsToolLoading(false); }
+  const runTool = async (id: string) => {
+    setToolBusy(id);
+    setToolOut(null);
+    try {
+      const out = await executeItemTool(item, id);
+      setToolOut(out);
+    } catch (e: any) {
+      setToolOut(e?.message || 'That tool failed. Try again.');
+    } finally {
+      setToolBusy(null);
+    }
   };
 
-  const cyclePrompts = async () => {
-      soundManager.playClick();
-      triggerHaptic('click');
-      setIsCyclingPrompts(true);
-      try {
-          const newPrompts = await generateDynamicPrompts(currentResult);
-          setPrompts(newPrompts);
-      } catch (e) { setPrompts(["Market Analysis", "Authentication Protocol", "Maintenance"]); }
-      setIsCyclingPrompts(false);
+  const buildListing = async () => {
+    // Prefer data we already have
+    const existingTitle = item.sellingProfile?.listingTitle;
+    const existingBody = item.sellingProfile?.listingDescription;
+    if (existingTitle && existingBody && existingTitle !== 'Item for Sale') {
+      setListing({ title: existingTitle, body: existingBody });
+      return;
+    }
+    setToolBusy('listing');
+    try {
+      const [title, body] = await Promise.all([
+        executeItemTool(item, 'LISTING_TITLE_ONLY'),
+        executeItemTool(item, 'LISTING_DESCRIPTION_ONLY'),
+      ]);
+      setListing({ title: title.trim(), body: body.trim() });
+      const next = {
+        ...item,
+        sellingProfile: {
+          ...item.sellingProfile,
+          listingTitle: title.trim(),
+          listingDescription: body.trim(),
+        },
+      };
+      setItem(next);
+      onSave(next);
+    } catch {
+      toast.error('Could not generate listing');
+    } finally {
+      setToolBusy(null);
+    }
   };
 
-  const generateListing = async () => {
-      if (generatedListing) return;
-      setIsToolLoading(true);
-      try {
-          const title = await executeItemTool(currentResult, 'LISTING_TITLE_ONLY');
-          const body = await executeItemTool(currentResult, 'LISTING_DESCRIPTION_ONLY');
-          setGeneratedListing({ title, body });
-      } catch(e) { toast.error("Generation Failed"); }
-      setIsToolLoading(false);
-  };
-
-  const handlePrint = () => {
-      soundManager.playClick();
-      const content = printRef.current;
-      if (content) {
-          const printWindow = window.open('', '', 'height=900,width=800');
-          if (printWindow) {
-              printWindow.document.write('<html><head><title>Asset Dossier</title>');
-              printWindow.document.write('<script src="https://cdn.tailwindcss.com"></script>'); 
-              printWindow.document.write('</head><body class="bg-white text-black p-8 font-serif">');
-              printWindow.document.write(content.innerHTML);
-              printWindow.document.write('</body></html>');
-              printWindow.document.close();
-              printWindow.print();
-          }
+  const genRestore = async () => {
+    setRestoreBusy(true);
+    try {
+      const img = await generateRestorationPreview(item);
+      if (img) {
+        setRestoreImg(img);
+        const next = {
+          ...item,
+          restoration: { ...item.restoration, simulationImage: img },
+        };
+        setItem(next);
+        onSave(next);
+        toast.success('Restored preview ready');
+      } else {
+        toast.info('Image preview unavailable — see care steps below instead');
+        await runTool('CARE_GUIDE');
       }
+    } finally {
+      setRestoreBusy(false);
+    }
   };
 
-  const copyToClipboard = (text: string) => {
-      navigator.clipboard.writeText(text);
-      soundManager.playLock();
-      toast.success("Copied to Clipboard");
+  const refreshPrompts = async () => {
+    try {
+      const p = await generateDynamicPrompts(item);
+      setPrompts(p);
+    } catch {
+      /* keep existing */
+    }
   };
 
-  const getTrustBadge = (tier: string) => {
-      if (tier.includes('Level 3')) return { icon: ShieldCheck, color: 'text-emerald-500', bg: 'bg-emerald-500/10' };
-      if (tier.includes('Level 2')) return { icon: Shield, color: 'text-blue-500', bg: 'bg-blue-500/10' };
-      return { icon: ShieldAlert, color: 'text-amber-500', bg: 'bg-amber-500/10' };
+  const shareSummary = async () => {
+    const text = `${item.itemName}\n${item.era} · ${item.origin}\nEst. value: ${money(mid, currency)} (${money(low, currency)}–${money(high, currency)})\nCondition: ${item.condition}\nAuthenticity: ${authScore}%\n\nScanned with Curator Prime`;
+    if (navigator.share) {
+      try {
+        await navigator.share({ title: item.itemName, text });
+        return;
+      } catch {
+        /* fall through */
+      }
+    }
+    copyText(text, 'Summary copied');
   };
 
-  const TrustBadge = getTrustBadge(currentResult.provenance.trustTier);
-
-  // Valuation Visuals
-  const confidencePercent = Math.round(currentResult.confidence * 100);
-  const confColor = confidencePercent >= 90 ? 'text-emerald-400' : confidencePercent >= 75 ? 'text-blue-400' : 'text-amber-400';
-  const confBg = confidencePercent >= 90 ? 'bg-emerald-400' : confidencePercent >= 75 ? 'bg-blue-400' : 'bg-amber-400';
-  
-  const valRange = currentResult.valuation.high - currentResult.valuation.low;
-  const midPercent = valRange > 0 
-    ? Math.max(10, Math.min(90, ((currentResult.valuation.mid - currentResult.valuation.low) / valRange) * 100))
-    : 50;
+  const printDossier = () => {
+    const w = window.open('', '', 'width=800,height=900');
+    if (!w) return;
+    w.document.write(`<!doctype html><html><head><title>${item.itemName}</title>
+      <style>body{font-family:system-ui;padding:32px;color:#111;max-width:720px;margin:0 auto}
+      h1{font-size:28px;margin:0 0 8px} .meta{color:#666;margin-bottom:24px}
+      .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:16px 0}
+      .card{border:1px solid #ddd;border-radius:12px;padding:12px}
+      img{max-width:100%;border-radius:12px;margin:16px 0}</style></head><body>
+      <h1>${item.itemName}</h1>
+      <div class="meta">${item.classification} · ${item.era} · ${item.origin}</div>
+      <img src="${photo}" alt=""/>
+      <div class="grid">
+        <div class="card"><b>Value</b><br/>${money(mid, currency)}<br/><small>${money(low)} – ${money(high)}</small></div>
+        <div class="card"><b>Condition</b><br/>${item.condition} (${item.conditionScore}/10)</div>
+        <div class="card"><b>Authenticity</b><br/>${authScore}% confident</div>
+        <div class="card"><b>Materials</b><br/>${item.materials}</div>
+      </div>
+      <p>${item.historicalContext || ''}</p>
+      <p><b>Care:</b> ${item.careInstructions || ''}</p>
+      <p><small>Curator Prime dossier · ${new Date().toLocaleDateString()}</small></p>
+      </body></html>`);
+    w.document.close();
+    w.focus();
+    w.print();
+  };
 
   return (
-    <div className="h-full bg-black text-white font-sans overflow-hidden relative flex flex-col">
-      
-      {/* 1. TOP NAV */}
-      <div className="absolute top-0 left-0 right-0 z-50 flex justify-between items-start p-4 pt-[calc(20px+env(safe-area-inset-top))] pointer-events-none">
-        <button onClick={() => { soundManager.playClick(); onBack(); }} className="pointer-events-auto p-3 rounded-full bg-black/20 backdrop-blur-md border border-white/10 hover:bg-white hover:text-black transition-colors">
-            <ArrowLeft size={18} />
-        </button>
-        
-         <div className="flex gap-4 pointer-events-auto bg-black/40 backdrop-blur-3xl p-1.5 border border-white/5 rounded-full shadow-2xl relative">
-             <button onClick={() => { soundManager.playClick(); setViewMode('EXPLORE'); triggerHaptic('click'); }} className={`relative z-10 px-4 py-1.5 text-[9px] font-bold tracking-[0.2em] uppercase rounded-full transition-all duration-300 ${viewMode === 'EXPLORE' ? 'bg-white text-black' : 'text-zinc-500 hover:text-zinc-300'}`}>
-                 Optic
-             </button>
-             <button onClick={() => { soundManager.playClick(); setViewMode('RESTORE'); triggerHaptic('click'); }} className={`relative z-10 px-4 py-1.5 text-[9px] font-bold tracking-[0.2em] uppercase rounded-full transition-all duration-300 ${viewMode === 'RESTORE' ? 'bg-orange-500 text-black shadow-[0_0_15px_rgba(249,115,22,0.5)]' : 'text-zinc-500 hover:text-zinc-300'}`}>
-                 Restore
-             </button>
-             <button onClick={() => { soundManager.playClick(); setViewMode('PROVENANCE'); triggerHaptic('click'); }} className={`relative z-10 px-4 py-1.5 text-[9px] font-bold tracking-[0.2em] uppercase rounded-full transition-all duration-300 ${viewMode === 'PROVENANCE' ? 'bg-white text-black' : 'text-zinc-500 hover:text-zinc-300'}`}>
-                 Origin
-             </button>
-             <button onClick={() => { soundManager.playClick(); setViewMode('DETAILS'); triggerHaptic('click'); }} className={`relative z-10 px-4 py-1.5 text-[9px] font-bold tracking-[0.2em] uppercase rounded-full transition-all duration-300 ${viewMode === 'DETAILS' ? 'bg-white text-black' : 'text-zinc-500 hover:text-zinc-300'}`}>
-                 Data
-             </button>
-             <button onClick={() => { soundManager.playClick(); setViewMode('FINANCIAL'); triggerHaptic('click'); }} className={`relative z-10 px-4 py-1.5 text-[9px] font-bold tracking-[0.2em] uppercase rounded-full transition-all duration-300 ${viewMode === 'FINANCIAL' ? 'bg-white text-black' : 'text-zinc-500 hover:text-zinc-300'}`}>
-                 Fiscal
-             </button>
-             <button onClick={() => { soundManager.playClick(); setViewMode('TOOLS'); triggerHaptic('click'); }} className={`relative z-10 px-4 py-1.5 text-[9px] font-bold tracking-[0.2em] uppercase rounded-full transition-all duration-300 ${viewMode === 'TOOLS' ? 'bg-blue-500 text-black shadow-[0_0_15px_rgba(59,130,246,0.5)]' : 'text-zinc-500 hover:text-zinc-300'}`}>
-                 Tools
-             </button>
+    <div className="h-full bg-canvas text-ink flex flex-col relative overflow-hidden">
+      {/* Header */}
+      <header className="shrink-0 z-40 border-b border-line bg-surface/90 backdrop-blur-xl pt-[env(safe-area-inset-top)]">
+        <div className="flex items-center justify-between px-4 py-3">
+          <button
+            onClick={() => {
+              soundManager.playClick();
+              onBack();
+            }}
+            className="flex items-center gap-2 text-sm text-mute hover:text-ink transition-colors"
+          >
+            <ArrowLeft size={18} /> Back
+          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={shareSummary}
+              className="p-2.5 rounded-full border border-line bg-elevated text-mute hover:text-ink"
+              title="Share"
+            >
+              <Share2 size={16} />
+            </button>
+            <button
+              onClick={printDossier}
+              className="p-2.5 rounded-full border border-line bg-elevated text-mute hover:text-ink"
+              title="Print"
+            >
+              <Printer size={16} />
+            </button>
+            <button
+              onClick={() => setShowChat(true)}
+              className="flex items-center gap-1.5 px-3.5 py-2 rounded-full bg-brand text-white text-sm font-semibold shadow-glow"
+            >
+              <MessageCircle size={16} /> Ask
+            </button>
+          </div>
         </div>
 
-        <button onClick={() => { soundManager.playClick(); setShowChat(true); }} className="pointer-events-auto p-3 rounded-full bg-blue-500/10 border border-blue-500/50 text-blue-400 hover:bg-blue-500 hover:text-white transition-all backdrop-blur-md">
-             <Zap size={18} />
-        </button>
-      </div>
+        {/* Tabs */}
+        <div className="flex gap-1 px-3 pb-3 overflow-x-auto">
+          {TABS.map((t) => (
+            <button
+              key={t.id}
+              onClick={() => setTab(t.id)}
+              className={`shrink-0 px-3.5 py-2 rounded-full text-xs font-semibold transition-colors ${
+                tab === t.id
+                  ? 'bg-ink text-canvas'
+                  : 'bg-elevated text-mute hover:text-ink border border-line'
+              }`}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+      </header>
 
-      <HotspotCanvas 
-          currentResult={currentResult}
-          displayImage={displayImage}
-          activeEvidenceImage={activeEvidenceImage}
-          viewMode={viewMode}
-          scrollY={scrollY}
-          activeHotspot={activeHotspot}
-          discoveredHotspots={discoveredHotspots}
-          activeRepairVector={activeRepairVector}
-          setActiveEvidenceImage={setActiveEvidenceImage}
-          setActiveHotspot={setActiveHotspot}
-          toggleHotspot={toggleHotspot}
-          setActiveRepairVector={setActiveRepairVector}
-          handleChat={handleChat}
-          soundManager={soundManager}
-      />
-          {/* Hero Title or Restoration Details */}
-          <div className={`absolute bottom-0 left-0 right-0 p-6 transition-all duration-500 ${viewMode === 'DETAILS' || viewMode === 'TOOLS' || viewMode === 'PROVENANCE' || viewMode === 'RESTORE' || viewMode === 'FINANCIAL' ? 'translate-y-4 opacity-0' : 'translate-y-0 opacity-100'} z-30 pointer-events-none bg-gradient-to-t from-black/95 via-black/60 to-transparent pt-32`}>
-              
-              {/* Inspection Progress (Explore Only) */}
-              {viewMode === 'EXPLORE' && (
-                  <div className="mb-4 flex items-center gap-4 animate-in slide-in-from-left duration-700">
-                      <div className="flex-1 h-1 bg-white/5 rounded-full overflow-hidden border border-white/5">
-                          <div 
-                            className="h-full bg-blue-500 transition-all duration-1000 ease-out shadow-[0_0_10px_rgba(59,130,246,0.5)]"
-                            style={{ width: `${(discoveredHotspots.size / (currentResult.visualHotspots?.length || 1)) * 100}%` }}
-                          />
-                      </div>
-                      <div className="flex flex-col items-end">
-                          <span className="text-[8px] font-mono text-zinc-500 tracking-[0.2em] uppercase">Tactical_Scan</span>
-                          <span className="text-[10px] font-mono text-white font-bold">{discoveredHotspots.size}/{currentResult.visualHotspots?.length} FOUND</span>
-                      </div>
-                  </div>
-              )}
+      <div className="flex-1 overflow-y-auto pb-28">
+        {/* Hero */}
+        <div className="relative">
+          <div className="aspect-[4/3] bg-elevated overflow-hidden">
+            <img src={photo} alt={item.itemName} className="w-full h-full object-cover" />
+          </div>
+          <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-canvas via-canvas/80 to-transparent p-5 pt-20">
+            <div className="flex flex-wrap gap-2 mb-2">
+              <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-md bg-brand/20 text-brandsoft border border-brand/30">
+                {item.classification}
+              </span>
+              <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-md bg-elevated text-mute border border-line">
+                {trustLabel}
+              </span>
+            </div>
+            <h1 className="font-display text-2xl md:text-3xl text-ink leading-tight mb-1">
+              {item.itemName}
+            </h1>
+            <p className="text-sm text-mute">
+              {item.era}
+              {item.origin ? ` · ${item.origin}` : ''}
+            </p>
+          </div>
+        </div>
 
-              {viewMode === 'RESTORE' ? (
-                  <div className="bg-black/90 backdrop-blur-md border border-orange-500/30 p-5 rounded-xl pointer-events-auto shadow-2xl">
-                      <div className="flex items-center gap-2 text-orange-500 mb-2">
-                          <Wrench size={16} />
-                          <span className="text-[10px] font-bold uppercase tracking-widest">Restoration Protocol</span>
-                      </div>
-                      {activeRepairVector !== null && currentResult.visualHotspots ? (
-                          <div className="animate-in fade-in slide-in-from-bottom-2">
-                              <h4 className="text-red-400 font-bold text-sm uppercase tracking-widest mb-1">REP_VEC_{activeRepairVector + 1}: {currentResult.visualHotspots[activeRepairVector].label}</h4>
-                              <p className="font-mono text-xs text-orange-400/80 leading-relaxed">
-                                  {currentResult.visualHotspots[activeRepairVector].description}
-                              </p>
-                          </div>
-                      ) : (
-                          <p className="font-mono text-xs text-orange-400/80 leading-relaxed">
-                              {currentResult.restoration.restorationPotential}
-                              <br/><br/>
-                              <span className="text-orange-500/50 animate-pulse">Select a repair vector to view specific protocols...</span>
-                          </p>
-                      )}
-                  </div>
-              ) : (
-                  <div className="pointer-events-auto">
-                      <div className="flex justify-between items-end mb-3">
-                           <div className="inline-block px-2 py-1 bg-white/10 backdrop-blur border border-white/20 rounded-md text-[9px] font-bold uppercase tracking-widest">
-                              {currentResult.classification}
-                           </div>
-                           {/* Trust Tier Badge (Visual Mode) */}
-                           <div className={`flex items-center gap-2 backdrop-blur px-3 py-1.5 rounded-full border ${TrustBadge.bg} border-current ${TrustBadge.color}`}>
-                               <TrustBadge.icon size={14} />
-                               <span className="text-[9px] font-bold uppercase tracking-widest">{currentResult.provenance.trustTier.split('(')[1].replace(')','')}</span>
-                           </div>
-                      </div>
-                      
-                      <h1 className="font-display text-4xl md:text-5xl text-white leading-none mb-2">{currentResult.itemName}</h1>
-                      <div className="flex gap-3 text-xs font-mono text-zinc-400">
-                          <span>{currentResult.era}</span>
-                          <span className="text-zinc-600">|</span>
-                          <span>{currentResult.origin}</span>
-                      </div>
-                  </div>
-              )}
+        <div className="px-4 space-y-4 mt-2">
+          {/* Snapshot strip */}
+          <div className="grid grid-cols-3 gap-2">
+            <div className="rounded-2xl border border-line bg-elevated p-3">
+              <div className="text-[10px] uppercase tracking-wider text-faint mb-1">Est. value</div>
+              <div className="font-display text-lg text-ink">{money(mid, currency)}</div>
+            </div>
+            <div className="rounded-2xl border border-line bg-elevated p-3">
+              <div className="text-[10px] uppercase tracking-wider text-faint mb-1">Condition</div>
+              <div className="font-display text-lg text-ink">{item.conditionScore}/10</div>
+            </div>
+            <div className="rounded-2xl border border-line bg-elevated p-3">
+              <div className="text-[10px] uppercase tracking-wider text-faint mb-1">Authentic</div>
+              <div className="font-display text-lg text-ink">{authScore}%</div>
+            </div>
           </div>
 
-      {/* 3. DATA LAYER (BENTO GRID & TOOLS) */}
-      <div className={`flex-1 min-h-0 bg-black relative transition-all duration-700 border-t border-white/10 ${(viewMode === 'DETAILS' || viewMode === 'TOOLS' || viewMode === 'PROVENANCE' || viewMode === 'RESTORE' || viewMode === 'FINANCIAL') ? 'translate-y-0' : 'translate-y-full'}`}>
-          <div 
-            className="h-full overflow-y-auto p-6 pb-32"
-            onScroll={(e) => setScrollY(e.currentTarget.scrollTop)}
-          >
-              
-              {viewMode === 'FINANCIAL' && (
-                  <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
-                      <div className="flex flex-col gap-6">
-                           <div className="flex justify-between items-start border-b border-blue-500/20 pb-4">
-                                <div>
-                                    <div className="flex items-center gap-2 mb-1">
-                                        <TrendingUp size={12} className="text-emerald-500" />
-                                        <span className="text-[10px] font-mono text-emerald-500 tracking-[0.3em] uppercase">Market_Forecast</span>
-                                    </div>
-                                    <h2 className="text-3xl font-display text-white">Financial Outlook</h2>
-                                </div>
-                                <div className="text-right">
-                                    <div className="text-[8px] font-mono text-zinc-500 uppercase tracking-widest mb-1">Liquidity_Score</div>
-                                    <div className={`text-xl font-mono ${currentResult.forecast.liquidityScore > 70 ? 'text-emerald-400' : 'text-amber-400'}`}>
-                                        {currentResult.forecast.liquidityScore}/100
-                                    </div>
-                                </div>
-                           </div>
-
-                           {/* Market Metrics Grid */}
-                           <div className="grid grid-cols-2 gap-3">
-                                <div className="bg-zinc-900/40 border border-white/5 p-4 rounded-2xl">
-                                    <div className="text-[8px] font-mono text-zinc-500 uppercase tracking-widest mb-2">Market_Sentiment</div>
-                                    <div className="flex items-center gap-2">
-                                        <div className={`w-2 h-2 rounded-full ${currentResult.forecast.marketSentiment === 'Bullish' ? 'bg-emerald-500 shadow-[0_0_5px_rgba(16,185,129,0.5)]' : 'bg-amber-500'}`}></div>
-                                        <div className="text-sm font-bold uppercase tracking-widest">{currentResult.forecast.marketSentiment}</div>
-                                    </div>
-                                </div>
-                                <div className="bg-zinc-900/40 border border-white/5 p-4 rounded-2xl">
-                                    <div className="text-[8px] font-mono text-zinc-500 uppercase tracking-widest mb-2">Invertment_Grade</div>
-                                    <div className="text-sm font-bold text-white uppercase tracking-[0.2em]">{currentResult.forecast.investmentGrade}</div>
-                                </div>
-                           </div>
-
-                           <ValuationPanel currentResult={currentResult} onUpdate={setCurrentResult} />
-                           
-                           <MarketComparables currentResult={currentResult} />
-
-                           {/* Action Modules */}
-                           <div className="space-y-3">
-                                <div className="p-4 bg-gradient-to-r from-blue-500/10 to-transparent border border-blue-500/20 rounded-2xl flex items-center justify-between">
-                                    <div className="flex gap-3 items-center">
-                                        <div className="w-10 h-10 rounded-xl bg-blue-500/20 flex items-center justify-center text-blue-400">
-                                            <Rocket size={20} />
-                                        </div>
-                                        <div>
-                                            <div className="text-xs font-bold text-white">Investment Advisory</div>
-                                            <div className="text-[9px] text-blue-400/70 font-mono uppercase">Optimized Exit Strategy Ready</div>
-                                        </div>
-                                    </div>
-                                    <button className="px-4 py-2 bg-blue-500 text-black text-[9px] font-bold uppercase rounded-lg hover:bg-blue-400 transition-colors">
-                                        Consult AI
-                                    </button>
-                                </div>
-                           </div>
-                      </div>
+          {tab === 'overview' && (
+            <div className="space-y-4 animate-in fade-in duration-300">
+              <section className="rounded-2xl border border-line bg-surface p-4">
+                <h2 className="text-sm font-semibold mb-2 flex items-center gap-2">
+                  <Sparkles size={14} className="text-brandsoft" /> What it is
+                </h2>
+                <p className="text-sm text-mute leading-relaxed">
+                  {item.historicalContext || 'No historical notes available.'}
+                </p>
+                <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+                  <div className="rounded-xl bg-elevated border border-line p-3">
+                    <div className="text-faint mb-0.5">Materials</div>
+                    <div className="text-ink">{item.materials || '—'}</div>
                   </div>
-              )}
-
-              {viewMode === 'RESTORE' && (
-                  <RestorationPreview
-                      currentResult={currentResult}
-                      isGeneratingPreview={isGeneratingPreview}
-                      restorationPreviewImg={restorationPreviewImg}
-                      activeRepairVector={activeRepairVector}
-                      handleGeneratePreview={handleGeneratePreview}
-                      setActiveRepairVector={setActiveRepairVector}
-                  />
-              )}
-
-              {viewMode === 'PROVENANCE' && (
-                  <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
-                      <div className="flex flex-col gap-6">
-                          {/* Registry Header */}
-                          <div className="flex justify-between items-start">
-                              <div>
-                                  <div className="text-[10px] font-mono text-zinc-500 tracking-[0.3em] uppercase mb-1">Decentralized_Ledger</div>
-                                  <h2 className="text-3xl font-display text-white">Digital Provenance</h2>
-                              </div>
-                              <div className={`px-3 py-1.5 rounded-full border ${currentResult.provenance.chainStatus === 'Minted' ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400' : 'bg-amber-500/10 border-amber-500/30 text-amber-400'} flex items-center gap-2`}>
-                                  <div className={`w-1.5 h-1.5 rounded-full ${currentResult.provenance.chainStatus === 'Minted' ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`}></div>
-                                  <span className="text-[10px] font-bold uppercase tracking-widest">{currentResult.provenance.chainStatus}</span>
-                              </div>
-                          </div>
-
-                          {/* Authenticity Assessment Block */}
-                          <div className="bg-zinc-900/40 border border-white/10 rounded-2xl p-6 relative group overflow-hidden">
-                              <div className="flex justify-between items-start mb-4">
-                                  <div className="flex items-center gap-2">
-                                      <ShieldCheck size={16} className="text-emerald-500" />
-                                      <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-400">Authenticity_Assessment</span>
-                                  </div>
-                                  <div className="text-right">
-                                      <div className={`text-2xl font-display ${currentResult.authenticityScore >= 80 ? 'text-emerald-400' : currentResult.authenticityScore >= 50 ? 'text-amber-400' : 'text-red-400'}`}>
-                                          {currentResult.authenticityScore ?? currentResult.confidence ?? 0}%
-                                      </div>
-                                      <div className="text-[8px] font-mono uppercase text-zinc-500">Confidence_Score</div>
-                                  </div>
-                              </div>
-                              <div className="font-serif text-sm leading-relaxed text-zinc-300">
-                                  {currentResult.authenticityAssessment || "Analysis complete. Authenticity validated against visual vectors and known historical markers."}
-                              </div>
-                          </div>
-
-                          {/* Genesis Hash Module */}
-                          <div className="bg-zinc-900/40 border border-white/10 rounded-2xl p-6 relative group overflow-hidden">
-                              <div className="absolute top-0 right-0 p-4 opacity-10 pointer-events-none">
-                                  <Cpu size={48} />
-                              </div>
-                              <div className="flex items-center gap-2 mb-4">
-                                  <Fingerprint size={16} className="text-blue-500" />
-                                  <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-400">Genesis_Hash</span>
-                              </div>
-                              <div className="bg-black/60 border border-white/5 p-4 rounded-xl font-mono text-sm break-all text-blue-100 shadow-inner">
-                                  {currentResult.provenance.digitalHash}
-                              </div>
-                              <div className="mt-4 flex justify-between items-center text-[10px] font-mono text-zinc-500">
-                                  <span>BLOCK_HEIGHT: 18,294,012</span>
-                                  <span>TS: {new Date().toLocaleDateString()}</span>
-                              </div>
-                          </div>
-
-                          {/* Integrity Grid */}
-                          <div className="grid grid-cols-2 gap-3">
-                              <div className="bg-zinc-900/20 border border-white/5 p-5 rounded-2xl">
-                                  <div className="text-[9px] font-bold uppercase text-zinc-500 tracking-widest mb-3">Trust_Tier</div>
-                                  <div className="flex items-center gap-3">
-                                      <div className={`p-2 rounded-lg ${TrustBadge.bg}`}>
-                                          <TrustBadge.icon size={18} className={TrustBadge.color} />
-                                      </div>
-                                      <div className="text-sm font-bold text-white">{currentResult.provenance.trustTier.split(' ')[2]}</div>
-                                  </div>
-                              </div>
-                              <div className="bg-zinc-900/20 border border-white/5 p-5 rounded-2xl">
-                                  <div className="text-[9px] font-bold uppercase text-zinc-500 tracking-widest mb-3">Immutability</div>
-                                  <div className="flex items-center gap-3">
-                                      <div className="p-2 rounded-lg bg-blue-500/10">
-                                          <LucideLock size={18} className="text-blue-400" />
-                                      </div>
-                                      <div className="text-sm font-bold text-white">LOCKED</div>
-                                  </div>
-                              </div>
-                          </div>
-
-                          {/* Historical Chain */}
-                          <div className="border border-white/10 rounded-2xl p-6">
-                              <h3 className="text-[10px] font-bold uppercase text-zinc-600 tracking-widest mb-6 flex items-center gap-2">
-                                  <Activity size={12} /> Registry_History
-                              </h3>
-                              <div className="space-y-6 relative">
-                                  {/* Line */}
-                                  <div className="absolute left-1.5 top-2 bottom-2 w-px bg-white/10"></div>
-                                  
-                                  <div className="relative pl-7 group">
-                                      <div className="absolute left-0 top-1.5 w-3 h-3 rounded-full bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.5)]"></div>
-                                      <div className="text-[10px] font-mono text-zinc-500 mb-1">2026-04-17T15:05:47Z</div>
-                                      <div className="text-xs font-bold text-white group-hover:text-emerald-400 transition-colors">Forensic Scan & Hash Generation</div>
-                                      <div className="text-[10px] text-zinc-600 mt-1 uppercase">Node: US-WEST_SCRYB_09</div>
-                                  </div>
-
-                                  <div className="relative pl-7 group opacity-50">
-                                      <div className="absolute left-0 top-1.5 w-3 h-3 rounded-full bg-zinc-800"></div>
-                                      <div className="text-[10px] font-mono text-zinc-500 mb-1">PENDING_CONFIRMATION</div>
-                                      <div className="text-xs font-bold text-zinc-400 group-hover:text-white transition-colors">Distributed Validation Network</div>
-                                      <div className="text-[10px] text-zinc-700 mt-1 uppercase">Awaiting Consensus...</div>
-                                  </div>
-                              </div>
-                          </div>
-
-                          {/* Action Link */}
-                          <div className="bg-blue-600/10 border border-blue-500/30 p-4 rounded-xl flex items-center justify-between">
-                              <div className="flex items-center gap-3">
-                                  <div className="p-2 rounded bg-blue-500/20">
-                                      <Globe size={18} className="text-blue-400" />
-                                  </div>
-                                  <div>
-                                      <div className="text-xs font-bold text-white">Public Explorer</div>
-                                      <div className="text-[9px] text-zinc-500 uppercase tracking-tighter">View_On_Mainnet</div>
-                                  </div>
-                              </div>
-                              <ChevronRight size={16} className="text-zinc-500" />
-                          </div>
-                      </div>
+                  <div className="rounded-xl bg-elevated border border-line p-3">
+                    <div className="text-faint mb-0.5">Category</div>
+                    <div className="text-ink">{item.category || '—'}</div>
                   </div>
+                </div>
+              </section>
+
+              {item.keyFeatures && item.keyFeatures.length > 0 && (
+                <section className="rounded-2xl border border-line bg-surface p-4">
+                  <h2 className="text-sm font-semibold mb-3">Key features</h2>
+                  <ul className="space-y-2">
+                    {item.keyFeatures.map((f, i) => (
+                      <li key={i} className="flex gap-2 text-sm text-mute">
+                        <ChevronRight size={14} className="text-brandsoft shrink-0 mt-0.5" />
+                        <span>{f}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </section>
               )}
 
-              {viewMode === 'DETAILS' && (
-                  <>
-                    {/* Header */}
-                    <div className="flex flex-col sm:flex-row justify-between items-start sm:items-end gap-4 mb-6">
-                        <div>
-                            <h2 className="text-2xl font-display text-white">Asset Dossier</h2>
-                            <div className="flex items-center gap-2 mt-1">
-                                <div className={`flex items-center gap-1.5 px-2 py-0.5 rounded-full border ${TrustBadge.bg} border-current ${TrustBadge.color}`}>
-                                    <TrustBadge.icon size={10} />
-                                    <span className="text-[8px] font-bold uppercase tracking-widest leading-none">{currentResult.provenance.trustTier}</span>
-                                </div>
-                                <div className={`flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-zinc-900/80 border border-white/5 ${confColor}`}>
-                                    <div className={`w-1 h-1 rounded-full ${confBg} shadow-[0_0_5px_currentColor]`}></div>
-                                    <span className="text-[8px] font-bold tracking-wider">{confidencePercent}% CONFIDENCE</span>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <ValuationPanel currentResult={currentResult} onUpdate={setCurrentResult} />
-
-                    {/* === FORENSIC INSIGHT (LOGIC GATE) === */}
-                    <CuratorsInsight result={currentResult} />
-
-                    <div className="grid grid-cols-2 gap-3 mb-3">
-                        {/* Rarity Card */}
-                        <div className="bg-zinc-900/40 border border-white/5 p-4 rounded-2xl">
-                            <div className="flex items-center gap-2 text-amber-500 mb-2">
-                                <Sparkles size={14} />
-                                <span className="text-[9px] font-bold uppercase tracking-widest">Rarity</span>
-                            </div>
-                            <div className="text-3xl font-display text-white">{currentResult.rarityScore}<span className="text-sm text-zinc-600">/10</span></div>
-                        </div>
-                        
-                        {/* Condition Card */}
-                        <div className="bg-zinc-900/40 border border-white/5 p-4 rounded-2xl">
-                            <div className="flex items-center gap-2 text-blue-400 mb-2">
-                                <Layers size={14} />
-                                <span className="text-[9px] font-bold uppercase tracking-widest">Grade</span>
-                            </div>
-                            <div className="text-3xl font-display text-white">{currentResult.conditionScore}<span className="text-sm text-zinc-600">/10</span></div>
-                        </div>
-                    </div>
-
-                    <div className="bg-zinc-900/10 border border-white/5 p-6 rounded-3xl mb-4 backdrop-blur-sm">
-                        <h3 className="text-[9px] font-bold uppercase text-zinc-600 tracking-[0.3em] mb-3">Forensic_Analysis</h3>
-                        <p className="font-sans text-zinc-400 leading-relaxed text-sm antialiased">{currentResult.historicalContext}</p>
-                    </div>
-
-                    {/* Conditional Authentication/Features */}
-                    {['Antique', 'Vintage'].includes(currentResult.classification) && currentResult.authenticationMarks && currentResult.authenticationMarks.length > 0 && (
-                        <div className="bg-zinc-900/10 border border-white/5 p-6 rounded-3xl mb-4 backdrop-blur-sm">
-                            <h3 className="text-[9px] font-bold uppercase text-zinc-600 tracking-[0.3em] mb-3">Authentication_Marks</h3>
-                            <ul className="list-none space-y-2">
-                                {currentResult.authenticationMarks.map((mark, i) => (
-                                    <li key={i} className="flex gap-3 text-sm text-zinc-400">
-                                        <ShieldCheck size={16} className="text-blue-500 shrink-0 mt-0.5" />
-                                        <span>{mark}</span>
-                                    </li>
-                                ))}
-                            </ul>
-                        </div>
-                    )}
-
-                    {currentResult.classification === 'Modern' && currentResult.keyFeatures && currentResult.keyFeatures.length > 0 && (
-                        <div className="bg-zinc-900/10 border border-white/5 p-6 rounded-3xl mb-4 backdrop-blur-sm">
-                            <h3 className="text-[9px] font-bold uppercase text-zinc-600 tracking-[0.3em] mb-3">Key_Features</h3>
-                            <ul className="list-none space-y-2">
-                                {currentResult.keyFeatures.map((feature, i) => (
-                                    <li key={i} className="flex gap-3 text-sm text-zinc-400">
-                                        <Sparkles size={16} className="text-emerald-500 shrink-0 mt-0.5" />
-                                        <span>{feature}</span>
-                                    </li>
-                                ))}
-                            </ul>
-                        </div>
-                    )}
-
-                    {/* Market Intelligence / Selling Points */}
-                    <div className="bg-zinc-900/20 border border-white/5 p-5 rounded-2xl mb-3">
-                        <div className="flex items-center gap-2 text-pink-400 mb-4">
-                            <Rocket size={14} />
-                            <span className="text-[9px] font-bold uppercase tracking-widest">Market Intelligence</span>
-                        </div>
-                        <div className="space-y-4">
-                            <div>
-                                <h4 className="text-[10px] text-zinc-500 uppercase font-mono mb-2 tracking-widest">Listing_Strategy</h4>
-                                <p className="text-xs text-white font-bold tracking-tight">{currentResult.sellingProfile.listingTitle}</p>
-                            </div>
-                            <div className="grid grid-cols-2 gap-3">
-                                <div className="p-3 bg-black/40 rounded-xl border border-white/5">
-                                    <div className="text-[8px] text-zinc-500 uppercase font-mono mb-1">Target_Venue</div>
-                                    <div className="text-[10px] text-zinc-200 font-bold">{currentResult.sellingProfile.recommendedVenue}</div>
-                                </div>
-                                <div className="p-3 bg-black/40 rounded-xl border border-white/5">
-                                    <div className="text-[8px] text-zinc-500 uppercase font-mono mb-1">Strategy</div>
-                                    <div className="text-[10px] text-zinc-200 font-bold">{currentResult.sellingProfile.pricingStrategy}</div>
-                                </div>
-                            </div>
-                            <div className="flex flex-wrap gap-2 pt-2">
-                                {currentResult.sellingProfile.keywords.slice(0, 4).map((kw, i) => (
-                                    <div key={i} className="px-2 py-1 bg-zinc-800 rounded text-[9px] font-mono text-zinc-400">#{kw.replace(/\s+/g, '_').toUpperCase()}</div>
-                                ))}
-                            </div>
-                        </div>
-                    </div>
-
-                    {/* Professional Syndicate Tools */}
-                    <div className="mt-6 mb-6">
-                        <div className="flex items-center justify-between mb-3">
-                           <h3 className="text-[10px] font-bold uppercase text-zinc-600 tracking-widest">Syndicate Engine</h3>
-                           <span className="text-[9px] bg-blue-900/30 text-blue-300 px-2 py-0.5 rounded border border-blue-500/30 font-bold uppercase">Pro</span>
-                        </div>
-                        <div className="grid grid-cols-2 gap-2">
-                            <button 
-                              onClick={() => { setExportMode('DOSSIER'); soundManager.playClick(); }}
-                              className="p-4 bg-zinc-900/80 border border-white/10 hover:bg-zinc-800 rounded-xl flex flex-col items-center gap-2 group transition-all"
-                            >
-                                <div className="p-2 rounded-full bg-zinc-800 group-hover:bg-white group-hover:text-black transition-colors">
-                                  <FileText size={20} />
-                                </div>
-                                <span className="text-[10px] font-bold uppercase text-zinc-400 group-hover:text-white">Dealer Dossier</span>
-                            </button>
-
-                            <button 
-                              onClick={() => { setExportMode('MARKETPLACE'); generateListing(); soundManager.playClick(); }}
-                              className="p-4 bg-zinc-900/80 border border-white/10 hover:bg-zinc-800 rounded-xl flex flex-col items-center gap-2 group transition-all"
-                            >
-                                <div className="p-2 rounded-full bg-zinc-800 group-hover:bg-white group-hover:text-black transition-colors">
-                                  <Share2 size={20} />
-                                </div>
-                                <span className="text-[10px] font-bold uppercase text-zinc-400 group-hover:text-white">Listing Gen</span>
-                            </button>
-                        </div>
-                    </div>
-                  </>
-              )}
-
-              {viewMode === 'TOOLS' && (
-                  <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
-                      <div className="mb-6 flex items-center justify-between border-b border-white/10 pb-4">
-                          <div>
-                              <div className="flex items-center gap-2 mb-1">
-                                  <div className="w-2 h-2 rounded-full bg-blue-500 animate-pulse"></div>
-                                  <span className="text-[10px] font-mono text-blue-500 tracking-[0.3em] uppercase">System_Active</span>
-                              </div>
-                              <h2 className="text-2xl font-display text-white italic">AI Synthesis Lab</h2>
-                              <p className="text-[10px] text-zinc-500 font-mono tracking-widest uppercase mt-1">Select logic module to initialize sequence</p>
-                          </div>
-                          <div className="flex flex-col items-end gap-1">
-                              <span className="text-[9px] font-mono text-zinc-600">MT_PROTOCOL_2.8</span>
-                              <div className="flex gap-1">
-                                  {[1,2,3].map(i => <div key={i} className="w-4 h-1 bg-zinc-800 rounded-full overflow-hidden"><div className="w-full h-full bg-blue-500/40 animate-pulse" style={{ animationDelay: `${i*150}ms` }}></div></div>)}
-                              </div>
-                          </div>
-                      </div>
-
-                      {/* Persistent Output Terminal */}
-                      <AnimatePresence>
-                        {(toolOutput || isToolLoading) && (
-                          <motion.div 
-                              initial={{ opacity: 0, y: 20, height: 0 }}
-                              animate={{ opacity: 1, y: 0, height: "auto" }}
-                              exit={{ opacity: 0, y: -20, height: 0 }}
-                              className="bg-[#0a0a0c] border border-white/10 rounded-2xl p-6 font-mono text-xs text-zinc-300 mb-8 shadow-2xl relative overflow-hidden group"
-                          >
-                              {/* Corner Accents */}
-                              <div className="absolute top-0 left-0 w-4 h-4 border-t border-l border-white/20"></div>
-                              <div className="absolute top-0 right-0 w-4 h-4 border-t border-r border-white/20"></div>
-                              <div className="absolute bottom-0 left-0 w-4 h-4 border-b border-l border-white/20"></div>
-                              <div className="absolute bottom-0 right-0 w-4 h-4 border-b border-r border-white/20"></div>
-
-                              <div className="flex items-center justify-between mb-4 text-zinc-500 border-b border-white/5 pb-4">
-                                  <div className="flex items-center gap-2">
-                                      <Terminal size={14} className="text-emerald-500" />
-                                      <span className="text-[9px] uppercase font-bold tracking-[0.2em] text-emerald-400">Console</span>
-                                  </div>
-                                  <div className="flex items-center gap-3">
-                                      {toolOutput && !isToolLoading && (
-                                          <button 
-                                              onClick={() => copyToClipboard(toolOutput)} 
-                                              className="flex items-center gap-1.5 text-[9px] uppercase font-bold text-white bg-white/10 hover:bg-white/20 px-3 py-1.5 rounded-full transition-all active:scale-95"
-                                          >
-                                              <Copy size={12} /> Copy_Result
-                                          </button>
-                                      )}
-                                      <div className="text-[8px] bg-zinc-900 border border-white/5 px-2 py-1 rounded text-zinc-600">ID: {currentResult.provenance.digitalHash.substring(0,8)}</div>
-                                      <button 
-                                          onClick={() => { setToolOutput(null); }}
-                                          className="flex items-center justify-center p-1.5 rounded-md hover:bg-white/10 transition-colors text-zinc-500 hover:text-white"
-                                      >
-                                          <X size={14} />
-                                      </button>
-                                  </div>
-                              </div>
-
-                              <div className="relative min-h-[200px]">
-                                  {isToolLoading ? (
-                                      <div className="flex flex-col items-center justify-center gap-4 py-8 h-full">
-                                          <div className="relative w-12 h-12">
-                                              <div className="absolute inset-0 border-2 border-blue-500/20 rounded-full"></div>
-                                              <div className="absolute inset-0 border-t-2 border-blue-500 rounded-full animate-spin"></div>
-                                              <Zap size={16} className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-blue-500 animate-pulse" />
-                                          </div>
-                                          <div className="flex flex-col items-center">
-                                              <span className="text-[10px] text-blue-400 animate-pulse tracking-[0.3em] font-bold uppercase">Synthesizing...</span>
-                                              <span className="text-[8px] text-zinc-600 mt-1 uppercase font-mono">Quantum_Calculations_Active</span>
-                                          </div>
-                                      </div>
-                                  ) : (
-                                      <div className="markdown-body prose prose-invert prose-sm max-w-none prose-p:text-emerald-300/80 prose-headings:text-emerald-400 prose-headings:font-mono prose-strong:text-emerald-400 prose-ul:list-disc prose-li:text-emerald-300/70 p-2">
-                                          <Markdown>{toolOutput}</Markdown>
-                                          <span className="inline-block w-2 h-4 bg-emerald-500/50 ml-1 animate-pulse align-middle"></span>
-                                      </div>
-                                  )}
-                                  
-                                  {/* Scanline Effect */}
-                                  <div className="absolute inset-0 pointer-events-none opacity-[0.03] bg-[linear-gradient(transparent_50%,#fff_50%)] bg-[size:100%_4px]"></div>
-                              </div>
-                          </motion.div>
-                        )}
-                      </AnimatePresence>
-
-                      {/* Tool Grid - Hardware Aesthetics */}
-                      <div className="grid grid-cols-2 gap-3 mb-8">
-                          {[
-                              { id: 'LISTING_BOOST', prompt: 'Listing Boost: Generate optimized eBay titles, keywords, and platform recommendations', label: 'Listing Boost', icon: PenTool, color: 'text-pink-400', desc: 'Marketplace Optimization' },
-                              { id: 'CONSERVATION_LAB', prompt: 'Conservation Lab: Provide detailed care instructions and preservation protocols', label: 'Conservation Lab', icon: FlaskConical, color: 'text-emerald-400', desc: 'Preservation Protocols' },
-                              { id: 'ERA_DECODER', prompt: 'Era Decoder: Provide deep historical context and decode era-specific features', label: 'Era Decoder', icon: History, color: 'text-amber-400', desc: 'Contextual Forensics' }
-                          ].map(tool => (
-                              <button 
-                                key={tool.id} 
-                                onClick={() => executeTool(tool.id, tool.prompt)} 
-                                disabled={isToolLoading}
-                                className={`p-5 bg-zinc-900/30 border-2 transition-all duration-300 rounded-2xl text-left hover:bg-zinc-800/50 group relative overflow-hidden ${activeTool === tool.id ? 'border-blue-500/50 bg-blue-500/5' : 'border-white/5'} ${isToolLoading && activeTool !== tool.id ? 'opacity-50 cursor-not-allowed grayscale' : ''}`}
-                              >
-                                  {/* Hardware Pattern background */}
-                                  <div className="absolute top-0 right-0 w-16 h-16 opacity-5 pointer-events-none">
-                                      <div className="absolute inset-0 border-t border-r border-white"></div>
-                                      <div className="absolute top-2 right-2 w-1 h-1 bg-white rounded-full"></div>
-                                  </div>
-
-                                  <div className="flex justify-between items-start mb-4">
-                                      <div className={`p-2.5 rounded-xl bg-black/40 ${tool.color} ${!isToolLoading && 'group-hover:scale-110'} transition-transform shadow-lg shadow-black/50`}>
-                                          <tool.icon size={22} className={isToolLoading && activeTool === tool.id ? "animate-pulse" : ""} />
-                                      </div>
-                                      {isToolLoading && activeTool === tool.id ? (
-                                          <div className="flex items-center gap-1.5 px-2 py-0.5 bg-blue-500/10 rounded-full border border-blue-500/20">
-                                              <Loader2 size={10} className="text-blue-500 animate-spin" />
-                                              <span className="text-[8px] font-mono text-blue-400 uppercase tracking-widest">Active</span>
-                                          </div>
-                                      ) : (
-                                          <ChevronRight size={14} className={`transition-all ${activeTool === tool.id ? 'text-blue-500 translate-x-1' : 'text-zinc-700 group-hover:text-white group-hover:translate-x-1'}`} />
-                                      )}
-                                  </div>
-                                  <div className="text-[12px] font-bold text-white uppercase tracking-tight mb-1">{tool.label}</div>
-                                  <div className={`text-[9px] font-mono leading-tight tracking-wider uppercase opacity-60 ${isToolLoading && activeTool === tool.id ? 'text-blue-400' : 'text-zinc-500'}`}>
-                                      {isToolLoading && activeTool === tool.id ? 'Processing...' : tool.desc}
-                                  </div>
-                                  
-                                  {activeTool === tool.id && (
-                                      <div className="absolute bottom-0 left-0 h-1 bg-blue-500 animate-in slide-in-from-left duration-500" style={{ width: '100%' }}></div>
-                                  )}
-                              </button>
-                          ))}
-                      </div>
-
-                      {/* Secondary Action Prompts */}
-                      <div className="bg-zinc-900/10 border-2 border-dashed border-white/5 rounded-2xl p-6">
-                           <div className="flex items-center justify-between mb-5">
-                               <div className="flex items-center gap-2">
-                                   <MessageSquare size={14} className="text-blue-500" />
-                                   <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-zinc-500">Query Synthesis</span>
-                               </div>
-                               <button onClick={cyclePrompts} disabled={isCyclingPrompts} className="p-2 hover:bg-white/5 rounded-full transition-colors">
-                                   <RefreshCw size={12} className={`text-zinc-600 ${isCyclingPrompts ? 'animate-spin' : ''}`} />
-                               </button>
-                           </div>
-                           <div className="grid gap-2">
-                               {prompts.slice(0, 3).map((p, i) => (
-                                   <button key={i} onClick={() => handleChat(p)} className="w-full text-left p-4 rounded-xl bg-white/5 hover:bg-blue-500/10 hover:translate-x-1 text-xs text-zinc-300 transition-all border border-transparent hover:border-blue-500/20 flex items-center gap-3 group">
-                                       <div className="w-1.5 h-1.5 rounded-full bg-blue-500/40 group-hover:bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.3)]"></div>
-                                       <span className="truncate flex-1 tracking-tight">{p}</span>
-                                       <ChevronRight size={10} className="text-zinc-800 group-hover:text-blue-500 mt-0.5" />
-                                   </button>
-                               ))}
-                           </div>
-                      </div>
-                  </div>
-              )}
-          </div>
-
-          {/* Action Bar */}
-          <div className="absolute bottom-0 left-0 right-0 p-5 bg-gradient-to-t from-black via-black/90 to-transparent pt-10 z-20">
-              <button 
-                  onClick={() => { soundManager.playLock(); onSave(currentResult); }} 
-                  className="w-full relative group h-14 overflow-hidden rounded-2xl transition-all duration-300 active:scale-95"
-              >
-                  {/* Background Layers */}
-                  <div className="absolute inset-0 bg-blue-600 group-hover:bg-blue-500 transition-colors"></div>
-                  <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/10 to-transparent -translate-x-full group-hover:translate-x-full transition-transform duration-1000"></div>
-                  
-                  {/* Glowing Edge */}
-                  <div className="absolute inset-0 border border-white/20 rounded-2xl group-hover:border-white/40 transition-colors"></div>
-                  <div className="absolute -inset-[1px] bg-gradient-to-r from-blue-400 to-emerald-400 opacity-0 group-hover:opacity-40 blur-sm rounded-2xl transition-opacity"></div>
-
-                  <span className="relative z-10 flex items-center justify-center gap-3 text-white font-bold uppercase tracking-[0.2em] text-[11px]">
-                      <div className="relative">
-                          <Database size={16} className="group-hover:rotate-12 transition-transform" />
-                          <div className="absolute -top-1 -right-1 w-2 h-2 bg-emerald-400 rounded-full animate-pulse shadow-[0_0_5px_rgba(52,211,153,0.8)]"></div>
-                      </div>
-                      Archive_to_Vault
-                  </span>
-
-                  {/* Tactical readout at corners */}
-                  <div className="absolute top-1 left-3 text-[7px] font-mono text-blue-200/50 uppercase tracking-tighter opacity-0 group-hover:opacity-100 transition-opacity">secure_link:auth</div>
-                  <div className="absolute bottom-1 right-3 text-[7px] font-mono text-blue-200/50 uppercase tracking-tighter opacity-0 group-hover:opacity-100 transition-opacity">v.2.8.scryb</div>
-              </button>
-          </div>
-      </div>
-
-      {/* === EXPORT MODALS === */}
-      
-      {/* 1. DEALER DOSSIER (PDF PREVIEW) */}
-      {exportMode === 'DOSSIER' && (
-          <div className="absolute inset-0 z-[150] bg-black/95 backdrop-blur-xl flex flex-col animate-in slide-in-from-bottom duration-300">
-              <div className="flex items-center justify-between p-4 border-b border-white/10 pt-[calc(20px+env(safe-area-inset-top))]">
-                  <div className="flex items-center gap-2">
-                      <FileText size={18} className="text-white" />
-                      <span className="font-display text-lg text-white">Dealer Dossier</span>
-                  </div>
-                  <div className="flex gap-2">
-                      <button onClick={handlePrint} className="flex items-center gap-1 bg-white text-black px-3 py-1.5 rounded text-xs font-bold hover:bg-zinc-200">
-                          <Printer size={14} /> Print / PDF
+              {item.visualHotspots && item.visualHotspots.length > 0 && (
+                <section className="rounded-2xl border border-line bg-surface p-4">
+                  <h2 className="text-sm font-semibold mb-3">Points of interest</h2>
+                  <div className="relative rounded-xl overflow-hidden border border-line mb-3 aspect-square max-h-64">
+                    <img src={photo} alt="" className="w-full h-full object-cover" />
+                    {item.visualHotspots.map((spot, i) => (
+                      <button
+                        key={i}
+                        onClick={() => setActiveSpot(activeSpot === spot ? null : spot)}
+                        className={`absolute w-7 h-7 -ml-3.5 -mt-3.5 rounded-full border-2 flex items-center justify-center text-[10px] font-bold transition-transform ${
+                          activeSpot === spot
+                            ? 'bg-brand border-white text-white scale-110'
+                            : 'bg-black/60 border-white/80 text-white'
+                        }`}
+                        style={{ left: `${spot.x}%`, top: `${spot.y}%` }}
+                      >
+                        {i + 1}
                       </button>
-                      <button onClick={() => setExportMode('NONE')} className="p-2 text-zinc-500 hover:text-white"><X size={20}/></button>
+                    ))}
                   </div>
+                  {activeSpot ? (
+                    <div className="rounded-xl bg-elevated border border-line p-3">
+                      <div className="text-xs font-semibold text-brandsoft mb-1">{activeSpot.label}</div>
+                      <p className="text-sm text-mute">{activeSpot.description}</p>
+                    </div>
+                  ) : (
+                    <p className="text-xs text-faint">Tap a marker to learn more.</p>
+                  )}
+                </section>
+              )}
+
+              <section className="rounded-2xl border border-line bg-surface p-4">
+                <div className="flex items-center justify-between mb-3">
+                  <h2 className="text-sm font-semibold">Suggested questions</h2>
+                  <button onClick={refreshPrompts} className="text-faint hover:text-ink p-1">
+                    <RefreshCw size={14} />
+                  </button>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {(prompts.length ? prompts : ['Is this authentic?', 'How should I price it?', 'How do I care for it?']).map(
+                    (p, i) => (
+                      <button
+                        key={i}
+                        onClick={() => handleChat(p)}
+                        className="text-left text-xs px-3 py-2 rounded-full border border-line bg-elevated text-mute hover:text-ink hover:border-brand/40 transition-colors"
+                      >
+                        {p}
+                      </button>
+                    )
+                  )}
+                </div>
+              </section>
+            </div>
+          )}
+
+          {tab === 'value' && (
+            <div className="space-y-4 animate-in fade-in duration-300">
+              <section className="rounded-2xl border border-line bg-surface p-5">
+                <div className="flex items-center gap-2 text-brandsoft mb-1">
+                  <DollarSign size={16} />
+                  <span className="text-xs font-semibold uppercase tracking-wider">Estimated range</span>
+                </div>
+                <div className="font-display text-4xl text-ink my-2">{money(mid, currency)}</div>
+                <p className="text-sm text-mute">
+                  Typical range {money(low, currency)} – {money(high, currency)}
+                </p>
+                <div className="mt-4 h-2 rounded-full bg-elevated overflow-hidden relative">
+                  <div className="absolute inset-y-0 left-0 right-0 bg-gradient-to-r from-faint/30 via-brandsoft/50 to-faint/30" />
+                  <div
+                    className="absolute top-1/2 -translate-y-1/2 w-3 h-3 rounded-full bg-ink border-2 border-brand"
+                    style={{
+                      left: `${
+                        high > low
+                          ? Math.min(95, Math.max(5, ((mid - low) / (high - low)) * 100))
+                          : 50
+                      }%`,
+                    }}
+                  />
+                </div>
+                <p className="text-[11px] text-faint mt-3">
+                  Confidence in ID: {confidence}% · Not a formal appraisal
+                </p>
+              </section>
+
+              <div className="grid grid-cols-2 gap-2">
+                <div className="rounded-2xl border border-line bg-elevated p-4">
+                  <div className="text-[10px] uppercase text-faint mb-1">Market mood</div>
+                  <div className="font-semibold">{item.forecast?.marketSentiment || 'Stable'}</div>
+                </div>
+                <div className="rounded-2xl border border-line bg-elevated p-4">
+                  <div className="text-[10px] uppercase text-faint mb-1">Liquidity</div>
+                  <div className="font-semibold">{item.forecast?.liquidityScore ?? '—'}/100</div>
+                </div>
+                <div className="rounded-2xl border border-line bg-elevated p-4">
+                  <div className="text-[10px] uppercase text-faint mb-1">Grade</div>
+                  <div className="font-semibold">{item.forecast?.investmentGrade || '—'}</div>
+                </div>
+                <div className="rounded-2xl border border-line bg-elevated p-4">
+                  <div className="text-[10px] uppercase text-faint mb-1">Rarity</div>
+                  <div className="font-semibold">{item.rarityScore}/10</div>
+                </div>
               </div>
-              
-              {/* HIDDEN PRINT REF - This is what actually prints */}
-              <div className="flex-1 overflow-y-auto p-8 bg-zinc-900/50 flex justify-center">
-                  <div ref={printRef} className="bg-white text-black w-full max-w-2xl p-8 shadow-2xl min-h-[800px]">
-                      {/* HEADER */}
-                      <div className="border-b-2 border-black pb-4 mb-6 flex justify-between items-start">
-                          <div>
-                              <h1 className="font-serif text-3xl font-bold tracking-tight mb-1">CONDITION REPORT</h1>
-                              <p className="text-xs font-mono uppercase tracking-widest text-gray-500">Curator Prime Authenticated</p>
-                          </div>
-                          <div className="text-right">
-                              <div className="text-4xl font-serif font-bold text-gray-900">${(currentResult.valuation.mid).toLocaleString()}</div>
-                              <p className="text-[10px] uppercase font-bold text-gray-500">Est. Market Value</p>
-                          </div>
-                      </div>
 
-                      {/* MAIN INFO */}
-                      <div className="grid grid-cols-2 gap-8 mb-8">
-                          <div>
-                              <img src={displayImage} className="w-full h-64 object-cover grayscale contrast-125 border border-gray-200 mb-2" />
-                              <div className="flex justify-between text-[9px] uppercase font-bold text-gray-400">
-                                  <span>ID: {currentResult.provenance.digitalHash.substring(0,8)}</span>
-                                  <span>{new Date().toLocaleDateString()}</span>
-                              </div>
-                          </div>
-                          <div className="space-y-4">
-                              <div>
-                                  <label className="block text-[10px] font-bold uppercase text-gray-500">Asset Name</label>
-                                  <div className="font-serif text-xl leading-tight">{currentResult.itemName}</div>
-                              </div>
-                              <div className="grid grid-cols-2 gap-4">
-                                  <div>
-                                      <label className="block text-[10px] font-bold uppercase text-gray-500">Era / Origin</label>
-                                      <div className="font-mono text-sm">{currentResult.era}, {currentResult.origin}</div>
-                                  </div>
-                                  <div>
-                                      <label className="block text-[10px] font-bold uppercase text-gray-500">Grade</label>
-                                      <div className="font-mono text-sm">{currentResult.conditionScore}/10 ({currentResult.condition})</div>
-                                  </div>
-                              </div>
-                              <div>
-                                  <label className="block text-[10px] font-bold uppercase text-gray-500">Provenance Status</label>
-                                  <div className="flex items-center gap-2 mt-1">
-                                      <TrustBadge.icon size={14} className={TrustBadge.color} />
-                                      <span className={`font-bold text-sm ${TrustBadge.color}`}>{currentResult.provenance.trustTier}</span>
-                                  </div>
-                              </div>
-                          </div>
-                      </div>
+              {item.rarityDescription && (
+                <p className="text-sm text-mute leading-relaxed px-1">{item.rarityDescription}</p>
+              )}
 
-                      {/* ANALYSIS */}
-                      <div className="mb-6">
-                          <h3 className="text-sm font-bold uppercase border-b border-gray-200 pb-1 mb-2">Historical Context</h3>
-                          <p className="font-serif text-sm leading-relaxed text-gray-700 text-justify">
-                              {currentResult.historicalContext}
-                          </p>
+              {item.comparableSales && item.comparableSales.length > 0 && (
+                <section className="rounded-2xl border border-line bg-surface p-4">
+                  <h2 className="text-sm font-semibold mb-3">Comparable sales</h2>
+                  <div className="space-y-2">
+                    {item.comparableSales.slice(0, 6).map((c, i) => (
+                      <div
+                        key={i}
+                        className="flex justify-between gap-3 text-sm border-b border-line last:border-0 pb-2 last:pb-0"
+                      >
+                        <div className="min-w-0">
+                          <div className="text-ink truncate">{c.title}</div>
+                          <div className="text-[11px] text-faint">
+                            {c.source}
+                            {c.date ? ` · ${c.date}` : ''}
+                          </div>
+                        </div>
+                        <div className="font-mono text-brandsoft shrink-0">{c.price}</div>
                       </div>
-
-                      <div className="grid grid-cols-2 gap-8">
-                          <div>
-                              <h3 className="text-sm font-bold uppercase border-b border-gray-200 pb-1 mb-2">Restoration Notes</h3>
-                              <p className="font-mono text-xs leading-relaxed text-gray-600">
-                                  {currentResult.restoration.restorationPotential}
-                              </p>
-                          </div>
-                          <div>
-                              <h3 className="text-sm font-bold uppercase border-b border-gray-200 pb-1 mb-2">Market Forecast</h3>
-                              <p className="font-mono text-xs leading-relaxed text-gray-600">
-                                  Sentiment: {currentResult.forecast.marketSentiment}<br/>
-                                  Liquidity Score: {currentResult.forecast.liquidityScore}/100<br/>
-                                  Investment Grade: {currentResult.forecast.investmentGrade}
-                              </p>
-                          </div>
-                      </div>
-
-                      {/* FOOTER */}
-                      <div className="mt-12 pt-4 border-t border-gray-200 flex justify-between items-center">
-                          <div className="text-[10px] text-gray-400 font-mono">
-                              Generated by Curator Prime OS<br/>
-                              Verify: secure.curator.ai/verify
-                          </div>
-                          <div className="w-16 h-16 border border-gray-300 flex items-center justify-center">
-                              <div className="w-12 h-12 bg-black"></div>
-                          </div>
-                      </div>
+                    ))}
                   </div>
+                </section>
+              )}
+
+              <button
+                onClick={() => runTool('SELL_STRATEGY')}
+                disabled={!!toolBusy}
+                className="w-full py-3 rounded-2xl border border-line bg-elevated text-sm font-semibold hover:border-brand/40 disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                {toolBusy === 'SELL_STRATEGY' ? <Loader2 size={16} className="animate-spin" /> : null}
+                Get sell strategy
+              </button>
+              {toolOut && tab === 'value' && (
+                <div className="rounded-2xl border border-line bg-surface p-4 text-sm text-mute prose prose-invert prose-sm max-w-none">
+                  <Markdown>{toolOut}</Markdown>
+                </div>
+              )}
+            </div>
+          )}
+
+          {tab === 'authenticity' && (
+            <div className="space-y-4 animate-in fade-in duration-300">
+              <section className="rounded-2xl border border-line bg-surface p-5">
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <div className="flex items-center gap-2 text-emerald-400 mb-1">
+                      <ShieldCheck size={16} />
+                      <span className="text-xs font-semibold uppercase tracking-wider">Authenticity</span>
+                    </div>
+                    <p className="text-sm text-mute leading-relaxed mt-2">
+                      {item.authenticityAssessment || 'No detailed authenticity write-up for this scan.'}
+                    </p>
+                  </div>
+                  <div className="text-right shrink-0">
+                    <div className="font-display text-3xl text-ink">{authScore}%</div>
+                    <div className="text-[10px] text-faint uppercase">confidence</div>
+                  </div>
+                </div>
+              </section>
+
+              {item.authenticationMarks && item.authenticationMarks.length > 0 && (
+                <section className="rounded-2xl border border-line bg-surface p-4">
+                  <h2 className="text-sm font-semibold mb-2">Marks & signatures</h2>
+                  <ul className="space-y-2">
+                    {item.authenticationMarks.map((m, i) => (
+                      <li key={i} className="text-sm text-mute flex gap-2">
+                        <span className="text-brandsoft">•</span> {m}
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+              )}
+
+              {item.forensicInsight && (
+                <section className="rounded-2xl border border-line bg-surface p-4">
+                  <h2 className="text-sm font-semibold mb-2">Closer look</h2>
+                  <p className="text-sm text-mute leading-relaxed">{item.forensicInsight}</p>
+                </section>
+              )}
+
+              <div className="rounded-2xl border border-line bg-elevated p-4 text-xs text-faint font-mono break-all">
+                <div className="text-mute mb-1 font-sans font-semibold">Evidence ID</div>
+                {item.provenance?.digitalHash || '—'}
               </div>
+
+              <button
+                onClick={() => runTool('AUTH_CHECKLIST')}
+                disabled={!!toolBusy}
+                className="w-full py-3 rounded-2xl bg-brand text-white text-sm font-semibold disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                {toolBusy === 'AUTH_CHECKLIST' ? <Loader2 size={16} className="animate-spin" /> : null}
+                Get buyer checklist
+              </button>
+              {toolOut && tab === 'authenticity' && (
+                <div className="rounded-2xl border border-line bg-surface p-4 text-sm text-mute prose prose-invert prose-sm max-w-none">
+                  <Markdown>{toolOut}</Markdown>
+                </div>
+              )}
+            </div>
+          )}
+
+          {tab === 'care' && (
+            <div className="space-y-4 animate-in fade-in duration-300">
+              <section className="rounded-2xl border border-line bg-surface p-4">
+                <h2 className="text-sm font-semibold mb-2 flex items-center gap-2">
+                  <Wrench size={14} className="text-brandsoft" /> Condition
+                </h2>
+                <p className="text-sm text-ink font-medium mb-1">
+                  {item.condition} · {item.conditionScore}/10
+                </p>
+                <p className="text-sm text-mute leading-relaxed">{item.careInstructions}</p>
+              </section>
+
+              <section className="rounded-2xl border border-line bg-surface p-4">
+                <h2 className="text-sm font-semibold mb-2">Restoration outlook</h2>
+                <p className="text-sm text-mute leading-relaxed mb-3">
+                  {item.restoration?.restorationPotential || 'Not assessed'}
+                </p>
+                {typeof item.restoration?.estimatedCost === 'number' && item.restoration.estimatedCost > 0 && (
+                  <p className="text-sm text-ink mb-3">
+                    Rough restore cost: <strong>{money(item.restoration.estimatedCost, currency)}</strong>
+                  </p>
+                )}
+                {item.restoration?.recommendedActions?.length > 0 && (
+                  <ul className="space-y-2 mb-4">
+                    {item.restoration.recommendedActions.map((a, i) => (
+                      <li key={i} className="text-sm text-mute flex gap-2">
+                        <span className="text-brandsoft font-mono text-xs mt-0.5">0{i + 1}</span>
+                        {a}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+
+                {restoreImg ? (
+                  <img
+                    src={restoreImg}
+                    alt="Restored preview"
+                    className="w-full rounded-xl border border-line object-cover aspect-square"
+                  />
+                ) : (
+                  <button
+                    onClick={genRestore}
+                    disabled={restoreBusy}
+                    className="w-full py-3 rounded-2xl border border-brand/40 bg-brand/10 text-brandsoft text-sm font-semibold disabled:opacity-50 flex items-center justify-center gap-2"
+                  >
+                    {restoreBusy ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={16} />}
+                    Preview restored look
+                  </button>
+                )}
+              </section>
+
+              <button
+                onClick={() => runTool('CARE_GUIDE')}
+                disabled={!!toolBusy}
+                className="w-full py-3 rounded-2xl border border-line bg-elevated text-sm font-semibold disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                {toolBusy === 'CARE_GUIDE' ? <Loader2 size={16} className="animate-spin" /> : null}
+                Full care guide
+              </button>
+              {toolOut && tab === 'care' && (
+                <div className="rounded-2xl border border-line bg-surface p-4 text-sm text-mute prose prose-invert prose-sm max-w-none">
+                  <Markdown>{toolOut}</Markdown>
+                </div>
+              )}
+            </div>
+          )}
+
+          {tab === 'sell' && (
+            <div className="space-y-4 animate-in fade-in duration-300">
+              <section className="rounded-2xl border border-line bg-surface p-4">
+                <h2 className="text-sm font-semibold mb-2">Where to sell</h2>
+                <p className="text-sm text-ink mb-1">
+                  {item.sellingProfile?.recommendedVenue || 'Online marketplace'}
+                </p>
+                <p className="text-sm text-mute">
+                  {item.sellingProfile?.pricingStrategy || 'Price near mid estimate; leave room to negotiate.'}
+                </p>
+              </section>
+
+              <button
+                onClick={buildListing}
+                disabled={!!toolBusy}
+                className="w-full py-3.5 rounded-2xl bg-brand text-white text-sm font-semibold disabled:opacity-50 flex items-center justify-center gap-2 shadow-glow"
+              >
+                {toolBusy === 'listing' ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={16} />}
+                {listing ? 'Regenerate listing' : 'Generate listing'}
+              </button>
+
+              {listing && (
+                <section className="rounded-2xl border border-line bg-surface p-4 space-y-3">
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-[10px] uppercase text-faint">Title</span>
+                      <button
+                        onClick={() => copyText(listing.title, 'Title copied')}
+                        className="text-brandsoft text-xs flex items-center gap-1"
+                      >
+                        {copied ? <Check size={12} /> : <Copy size={12} />} Copy
+                      </button>
+                    </div>
+                    <p className="text-sm font-medium text-ink">{listing.title}</p>
+                  </div>
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-[10px] uppercase text-faint">Description</span>
+                      <button
+                        onClick={() => copyText(listing.body, 'Description copied')}
+                        className="text-brandsoft text-xs flex items-center gap-1"
+                      >
+                        <Copy size={12} /> Copy
+                      </button>
+                    </div>
+                    <p className="text-sm text-mute whitespace-pre-wrap leading-relaxed">{listing.body}</p>
+                  </div>
+                  <button
+                    onClick={() =>
+                      copyText(`${listing.title}\n\n${listing.body}`, 'Full listing copied')
+                    }
+                    className="w-full py-2.5 rounded-xl border border-line text-sm font-semibold"
+                  >
+                    Copy full listing
+                  </button>
+                </section>
+              )}
+
+              {item.sellingProfile?.keywords && item.sellingProfile.keywords.length > 0 && (
+                <div className="flex flex-wrap gap-2">
+                  {item.sellingProfile.keywords.map((k, i) => (
+                    <span
+                      key={i}
+                      className="text-[11px] px-2.5 py-1 rounded-full bg-elevated border border-line text-mute"
+                    >
+                      {k}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Sticky chat dock */}
+      {!showChat && (
+        <div className="absolute bottom-0 inset-x-0 p-4 pb-[max(1rem,env(safe-area-inset-bottom))] bg-gradient-to-t from-canvas via-canvas/95 to-transparent">
+          <div className="flex gap-2 max-w-lg mx-auto">
+            <input
+              value={chatInput}
+              onChange={(e) => setChatInput(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && handleChat()}
+              placeholder="Ask about this item…"
+              className="flex-1 px-4 py-3.5 rounded-2xl bg-elevated border border-line text-sm text-ink outline-none focus:border-brandsoft/50"
+            />
+            <button
+              onClick={() => handleChat()}
+              disabled={!chatInput.trim() || chatLoading}
+              className="w-12 h-12 rounded-2xl bg-brand text-white flex items-center justify-center disabled:opacity-40"
+            >
+              {chatLoading ? <Loader2 size={18} className="animate-spin" /> : <Send size={18} />}
+            </button>
           </div>
+        </div>
       )}
 
-      {/* 2. MARKETPLACE LISTING (COPY PASTE) */}
-      {exportMode === 'MARKETPLACE' && (
-          <div className="absolute inset-0 z-[150] bg-black/95 backdrop-blur-xl flex flex-col animate-in slide-in-from-bottom duration-300">
-              <div className="flex items-center justify-between p-4 border-b border-white/10 pt-[calc(20px+env(safe-area-inset-top))]">
-                  <div className="flex items-center gap-2">
-                      <Share2 size={18} className="text-white" />
-                      <span className="font-display text-lg text-white">Marketplace Gen</span>
-                  </div>
-                  <button onClick={() => setExportMode('NONE')} className="p-2 text-zinc-500 hover:text-white"><X size={20}/></button>
-              </div>
-
-              <div className="flex-1 overflow-y-auto p-6 max-w-2xl mx-auto w-full">
-                  {isToolLoading ? (
-                      <div className="flex flex-col items-center justify-center h-64 text-zinc-500 gap-4">
-                          <RefreshCw size={32} className="animate-spin text-blue-500" />
-                          <p className="font-mono text-xs uppercase tracking-widest">Optimizing Search Vectors...</p>
-                      </div>
-                  ) : generatedListing ? (
-                      <div className="space-y-6">
-                          {/* TITLE BLOCK */}
-                          <div className="bg-zinc-900 border border-white/10 p-4 rounded-xl">
-                              <div className="flex justify-between items-center mb-2">
-                                  <label className="text-[10px] font-bold uppercase text-zinc-500">Optimized Title (80 chars)</label>
-                                  <button onClick={() => copyToClipboard(generatedListing.title)} className="text-blue-400 hover:text-white"><Copy size={14}/></button>
-                              </div>
-                              <div className="font-mono text-sm text-white break-words">{generatedListing.title.replace(/"/g, '')}</div>
-                          </div>
-
-                          {/* DESCRIPTION BLOCK */}
-                          <div className="bg-zinc-900 border border-white/10 p-4 rounded-xl">
-                              <div className="flex justify-between items-center mb-2">
-                                  <label className="text-[10px] font-bold uppercase text-zinc-500">HTML Description</label>
-                                  <button onClick={() => copyToClipboard(generatedListing.body)} className="text-blue-400 hover:text-white"><Copy size={14}/></button>
-                              </div>
-                              <div className="font-mono text-xs text-zinc-400 h-64 overflow-y-auto whitespace-pre-wrap border border-zinc-800 p-2 rounded bg-black">
-                                  {generatedListing.body}
-                              </div>
-                          </div>
-
-                          <div className="grid grid-cols-2 gap-4">
-                             <div className="bg-zinc-900/50 p-3 rounded-lg border border-white/5">
-                                 <span className="text-[9px] uppercase text-zinc-500 block mb-1">Recommended Price</span>
-                                 <span className="text-lg font-mono text-emerald-400">${Math.round(currentResult.valuation.mid * 1.15).toLocaleString()}</span>
-                                 <span className="text-[9px] text-zinc-600 block">Buy It Now (15% Markup)</span>
-                             </div>
-                             <div className="bg-zinc-900/50 p-3 rounded-lg border border-white/5">
-                                 <span className="text-[9px] uppercase text-zinc-500 block mb-1">Reserve Floor</span>
-                                 <span className="text-lg font-mono text-amber-400">${Math.round(currentResult.valuation.low).toLocaleString()}</span>
-                                 <span className="text-[9px] text-zinc-600 block">Minimum Bid</span>
-                             </div>
-                          </div>
-                      </div>
-                  ) : null}
-              </div>
-          </div>
-      )}
-
-      {/* Chat Modal (Simplified) */}
       <AskCuratorChat
-          showChat={showChat}
-          setShowChat={setShowChat}
-          chatHistory={chatHistory}
-          isChatLoading={isChatLoading}
-          chatInput={chatInput}
-          setChatInput={setChatInput}
-          handleChat={handleChat}
+        showChat={showChat}
+        setShowChat={setShowChat}
+        chatHistory={chatHistory}
+        isChatLoading={chatLoading}
+        chatInput={chatInput}
+        setChatInput={setChatInput}
+        handleChat={handleChat}
       />
     </div>
   );

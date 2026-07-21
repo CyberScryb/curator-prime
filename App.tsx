@@ -9,7 +9,7 @@ import { ItemResult } from './components/ItemResult';
 import { AuthScreen } from './components/AuthScreen';
 import { ProfileTerminal } from './components/ProfileTerminal';
 import { ArchiveTerminal } from './components/ArchiveTerminal';
-import { ScanLine, Box, BarChart3, Database, Loader2, Cpu, Fingerprint, Globe, User as UserIcon, Image as ImageIcon } from 'lucide-react';
+import { ScanLine, Box, BarChart3, Database, User as UserIcon, Image as ImageIcon } from 'lucide-react';
 import { soundManager } from './services/soundService';
 import { ToastContainer, ToastMessage, toast } from './components/Toast';
 import { useAuth } from './contexts/AuthContext';
@@ -169,7 +169,7 @@ const App: React.FC = () => {
             );
 
             soundManager.playLock('high');
-            toast.success("Asset Merged & Updated in Cloud");
+            toast.success("Updated in your collection");
         } else {
             const newItem = await buildVaultItem(normalized, primaryImage, user.uid);
 
@@ -178,7 +178,7 @@ const App: React.FC = () => {
             setActiveTab('COLLECTION');
 
             if (!user.emailVerified) {
-              toast.info("Appraisal ready. Verify email to permanently vault this item.");
+              toast.info("Results ready. Verify your email to save permanently.");
               return;
             }
 
@@ -187,7 +187,7 @@ const App: React.FC = () => {
             );
 
             soundManager.playLock('standard');
-            toast.success("New Asset Securely Vaulted to Cloud");
+            toast.success("Saved to your collection");
         }
     } catch (error) {
         console.error("Save error:", error);
@@ -247,9 +247,9 @@ const App: React.FC = () => {
     try {
         await deleteDoc(doc(db, 'items', id)).catch(e => handleFirestoreError(e, 'delete', `items/${id}`));
         if (selectedItem?.id === id) setSelectedItem(null);
-        toast.info("Asset Purged from Cloud Vault");
+        toast.info("Removed from collection");
     } catch (error) {
-        toast.error("Purge sequence failed");
+        toast.error("Could not delete item");
     }
   };
 
@@ -284,26 +284,16 @@ const App: React.FC = () => {
 
   if (authLoading || isBooting) {
       return (
-          <div className="fixed inset-0 bg-black flex flex-col items-center justify-center z-[999] text-emerald-500 font-mono">
-              <div className="w-64 relative">
-                  <div className="flex justify-between items-end mb-2">
-                      <h1 className="text-xl font-display text-white tracking-widest">CURATOR<span className="text-emerald-500">_OS</span></h1>
-                      <span className="text-xs">v4.1.0</span>
+          <div className="fixed inset-0 bg-canvas flex flex-col items-center justify-center z-[999] text-ink">
+              <div className="w-72 relative text-center">
+                  <div className="font-display text-2xl text-ink mb-1">Curator Prime</div>
+                  <p className="text-xs text-mute mb-6">Identify · Value · Collect</p>
+                  <div className="h-1 bg-elevated w-full mb-4 overflow-hidden rounded-full">
+                      <div className="h-full bg-brand rounded-full" style={{ animation: 'bootbar 1.6s ease-out forwards' }} />
                   </div>
-                  <div className="h-1 bg-zinc-800 w-full mb-4 overflow-hidden">
-                      <div className="h-full bg-emerald-500 animate-[loading_2.4s_ease-in-out_forwards]"></div>
-                  </div>
-                  <div className="space-y-1">
-                      <div className={`flex items-center gap-2 text-xs transition-opacity duration-300 ${bootStep >= 0 || authLoading ? 'opacity-100' : 'opacity-0'}`}>
-                          <Cpu size={12} /> <span>INITIALIZING CORE...</span> <span className="text-white ml-auto">OK</span>
-                      </div>
-                      <div className={`flex items-center gap-2 text-xs transition-opacity duration-300 ${bootStep >= 1 || authLoading ? 'opacity-100' : 'opacity-0'}`}>
-                          <Globe size={12} /> <span>GEMINI VISION LINK...</span> <span className="text-white ml-auto">SECURE</span>
-                      </div>
-                      <div className={`flex items-center gap-2 text-xs transition-opacity duration-300 ${bootStep >= 2 || (authLoading && !isBooting) ? 'opacity-100' : 'opacity-0'}`}>
-                          <Fingerprint size={12} /> <span>{authLoading ? 'AUTH_HANDSHAKE...' : 'BIOMETRIC KEYS...'}</span> <span className="text-white ml-auto">{authLoading ? '...' : 'VERIFIED'}</span>
-                      </div>
-                  </div>
+                  <p className="text-[11px] text-faint">
+                    {authLoading ? 'Signing you in…' : bootStep < 2 ? 'Starting camera tools…' : 'Almost ready…'}
+                  </p>
               </div>
           </div>
       );
@@ -319,84 +309,90 @@ const App: React.FC = () => {
   }
 
   return (
-    <div className="flex flex-col h-[100dvh] w-full bg-black text-zinc-100 font-sans selection:bg-white/20">
-      
-      {/* Toast Overlay */}
+    <div className="flex flex-col h-[100dvh] w-full bg-canvas text-ink font-sans selection:bg-brand/30">
       <ToastContainer toasts={toasts} removeToast={removeToast} />
 
-      {/* Global Ambient Glow */}
       <div className="fixed inset-0 pointer-events-none z-0">
-          <div className="absolute top-[-20%] left-[-10%] w-[60%] h-[60%] bg-blue-500/5 blur-[160px] rounded-full mix-blend-screen animate-pulse"></div>
-          <div className="absolute bottom-[-20%] right-[-10%] w-[60%] h-[60%] bg-emerald-500/5 blur-[160px] rounded-full mix-blend-screen animate-pulse" style={{ animationDelay: '2s' }}></div>
+          <div className="absolute top-[-15%] left-[-10%] w-[55%] h-[45%] bg-brand/10 blur-[120px] rounded-full" />
+          <div className="absolute bottom-[-10%] right-[-8%] w-[45%] h-[40%] bg-trust/15 blur-[100px] rounded-full" />
       </div>
 
-      <main className="flex-1 relative overflow-hidden flex flex-col z-10 animate-in fade-in duration-1000">
+      <main className="flex-1 relative overflow-hidden flex flex-col z-10">
         {renderContent()}
       </main>
 
-      {/* Floating Island Navigation */}
+      {/* Bottom nav — plain labels under icons */}
       {!(activeTab === 'COLLECTION' && selectedItem) && (
-          <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-50 animate-in slide-in-from-bottom-8 duration-700">
-             <div className="bg-zinc-900/40 backdrop-blur-3xl border border-white/5 rounded-full p-2 flex items-center gap-2 shadow-[0_20px_50px_rgba(0,0,0,0.5)]">
-                
-                <button 
+          <nav className="fixed bottom-5 left-1/2 -translate-x-1/2 z-50 w-[min(100%-1.5rem,28rem)]">
+             <div className="bg-surface/90 backdrop-blur-2xl border border-line rounded-[1.75rem] px-2 py-2 flex items-end justify-between shadow-card">
+                <button
                   onClick={() => { setActiveTab('COLLECTION'); soundManager.playClick(); }}
-                  className={`w-11 h-11 rounded-full flex items-center justify-center transition-all duration-300 relative group ${activeTab === 'COLLECTION' ? 'bg-white/10 text-white shadow-[inset_0_1px_1px_rgba(255,255,255,0.1)]' : 'text-zinc-500 hover:text-zinc-300'}`}
+                  className={`flex-1 flex flex-col items-center gap-0.5 py-1.5 rounded-2xl transition-colors ${activeTab === 'COLLECTION' ? 'text-ink' : 'text-faint hover:text-mute'}`}
                 >
-                  <Box size={18} strokeWidth={activeTab === 'COLLECTION' ? 2 : 1} />
-                </button>
- 
-                <button 
-                  onClick={() => { 
-                      if (activeTab === 'SCAN' && scannerRef.current) {
-                          // Try to trigger internal file input using a standard query selector to avoid passing refs down heavily if we can simply find it
-                          const fileInput = document.getElementById('gallery-upload-input');
-                          if (fileInput) fileInput.click();
-                      }
-                  }}
-                  className={`w-11 h-11 rounded-full flex items-center justify-center transition-all duration-300 relative group text-zinc-500 hover:text-zinc-300 ${activeTab !== 'SCAN' ? 'hidden md:flex opacity-50' : 'flex'}`}
-                  title="Upload from Device"
-                >
-                  <ImageIcon size={18} strokeWidth={1.5} className="group-hover:-translate-y-0.5 transition-transform" />
+                  <Box size={18} strokeWidth={activeTab === 'COLLECTION' ? 2.25 : 1.5} />
+                  <span className="text-[9px] font-semibold">Vault</span>
                 </button>
 
-                <button 
-                  onClick={() => { 
+                <button
+                  onClick={() => {
+                      if (activeTab === 'SCAN') {
+                          document.getElementById('gallery-upload-input')?.click();
+                      } else {
+                          setActiveTab('SCAN');
+                          soundManager.playClick();
+                      }
+                  }}
+                  className={`flex-1 flex flex-col items-center gap-0.5 py-1.5 rounded-2xl transition-colors ${activeTab === 'SCAN' ? 'text-ink' : 'text-faint hover:text-mute'}`}
+                  title="Upload photo"
+                >
+                  <ImageIcon size={18} strokeWidth={1.5} />
+                  <span className="text-[9px] font-semibold">Upload</span>
+                </button>
+
+                <button
+                  onClick={() => {
                       if (activeTab === 'SCAN') {
                           scannerRef.current?.capture();
                       } else {
-                          setActiveTab('SCAN'); 
-                          soundManager.playClick(); 
+                          setActiveTab('SCAN');
+                          soundManager.playClick();
                       }
                   }}
-                  className={`w-14 h-14 rounded-full flex items-center justify-center transition-all duration-500 shadow-2xl relative group ${activeTab === 'SCAN' ? 'bg-white text-black scale-110 shadow-[0_0_30px_rgba(255,255,255,0.3)]' : 'bg-zinc-800/80 text-zinc-400 border border-white/5 hover:bg-zinc-700'}`}
+                  className={`mx-1 w-14 h-14 -mt-5 rounded-full flex items-center justify-center transition-all shadow-glow ${
+                    activeTab === 'SCAN'
+                      ? 'bg-brand text-white scale-105'
+                      : 'bg-elevated text-mute border border-line hover:text-ink'
+                  }`}
+                  title={activeTab === 'SCAN' ? 'Capture' : 'Scan'}
                 >
-                  <ScanLine size={20} className={activeTab === 'SCAN' ? 'animate-pulse' : 'group-hover:scale-110 transition-transform'} />
+                  <ScanLine size={22} />
                 </button>
- 
-                <button 
+
+                <button
                   onClick={() => { setActiveTab('FINANCIAL'); soundManager.playClick(); }}
-                  className={`w-11 h-11 rounded-full flex items-center justify-center transition-all duration-300 relative group ${activeTab === 'FINANCIAL' ? 'bg-white/10 text-white shadow-[inset_0_1px_1px_rgba(255,255,255,0.1)]' : 'text-zinc-500 hover:text-zinc-300'}`}
+                  className={`flex-1 flex flex-col items-center gap-0.5 py-1.5 rounded-2xl transition-colors ${activeTab === 'FINANCIAL' ? 'text-ink' : 'text-faint hover:text-mute'}`}
                 >
-                  <BarChart3 size={18} strokeWidth={activeTab === 'FINANCIAL' ? 2 : 1} />
+                  <BarChart3 size={18} strokeWidth={activeTab === 'FINANCIAL' ? 2.25 : 1.5} />
+                  <span className="text-[9px] font-semibold">Market</span>
                 </button>
 
-                <button 
+                <button
                   onClick={() => { setActiveTab('ARCHIVE'); soundManager.playClick(); }}
-                  className={`w-11 h-11 rounded-full flex items-center justify-center transition-all duration-300 relative group ${activeTab === 'ARCHIVE' ? 'bg-white/10 text-white shadow-[inset_0_1px_1px_rgba(255,255,255,0.1)]' : 'text-zinc-500 hover:text-zinc-300'}`}
+                  className={`flex-1 flex flex-col items-center gap-0.5 py-1.5 rounded-2xl transition-colors ${activeTab === 'ARCHIVE' ? 'text-ink' : 'text-faint hover:text-mute'}`}
                 >
-                  <Database size={18} strokeWidth={activeTab === 'ARCHIVE' ? 2 : 1} />
+                  <Database size={18} strokeWidth={activeTab === 'ARCHIVE' ? 2.25 : 1.5} />
+                  <span className="text-[9px] font-semibold">Library</span>
                 </button>
 
-                <button 
+                <button
                   onClick={() => { setActiveTab('ACCOUNT'); soundManager.playClick(); }}
-                  className={`w-11 h-11 rounded-full flex items-center justify-center transition-all duration-300 relative group ${activeTab === 'ACCOUNT' ? 'bg-white/10 text-white shadow-[inset_0_1px_1px_rgba(255,255,255,0.1)]' : 'text-zinc-500 hover:text-zinc-300'}`}
+                  className={`flex-1 flex flex-col items-center gap-0.5 py-1.5 rounded-2xl transition-colors ${activeTab === 'ACCOUNT' ? 'text-ink' : 'text-faint hover:text-mute'}`}
                 >
-                  <UserIcon size={18} strokeWidth={activeTab === 'ACCOUNT' ? 2 : 1} />
+                  <UserIcon size={18} strokeWidth={activeTab === 'ACCOUNT' ? 2.25 : 1.5} />
+                  <span className="text-[9px] font-semibold">Account</span>
                 </button>
- 
              </div>
-          </div>
+          </nav>
       )}
     </div>
   );

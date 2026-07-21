@@ -61,12 +61,14 @@ export const MarketTrends: React.FC<MarketTrendsProps> = ({ items }) => {
 
   if (!latestItem) {
     return (
-      <div className="h-full flex flex-col items-center justify-center bg-black p-8 text-center border-t border-zinc-800">
-        <div className="w-24 h-24 bg-zinc-900 rounded-full mb-6 flex items-center justify-center border border-zinc-800 animate-pulse">
-          <Globe size={32} className="text-zinc-600" />
+      <div className="h-full flex flex-col items-center justify-center bg-canvas p-8 text-center">
+        <div className="w-20 h-20 bg-elevated rounded-3xl mb-6 flex items-center justify-center border border-line">
+          <Globe size={28} className="text-brandsoft" />
         </div>
-        <h2 className="text-xl font-display text-white mb-2">GLOBAL INTEL OFFLINE</h2>
-        <p className="text-zinc-500 font-mono text-xs max-w-xs">Scan asset to initiate market tracking uplink.</p>
+        <h2 className="text-xl font-display text-ink mb-2">No market data yet</h2>
+        <p className="text-mute text-sm max-w-xs leading-relaxed">
+          Scan an item first. Market insights use your latest piece as the reference.
+        </p>
       </div>
     );
   }
@@ -74,9 +76,9 @@ export const MarketTrends: React.FC<MarketTrendsProps> = ({ items }) => {
   return (
     <div className="h-full flex flex-col bg-black overflow-auto font-mono">
       <div className="bg-black p-6 border-b border-zinc-800 pt-[calc(20px+env(safe-area-inset-top))]">
-        <h1 className="text-2xl font-display font-bold text-white mb-1">INTEL_FEED</h1>
-        <p className="text-[10px] text-zinc-500 uppercase tracking-widest font-bold">
-          TARGET: <span className="text-blue-500">{latestItem.itemName}</span>
+        <h1 className="text-2xl font-display font-bold text-ink mb-1">Market</h1>
+        <p className="text-xs text-mute">
+          Based on: <span className="text-brandsoft font-medium">{latestItem.itemName}</span>
         </p>
       </div>
 

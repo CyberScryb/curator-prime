@@ -147,7 +147,18 @@ app.post("/api/ask", async (req, res) => {
   try {
     const { itemContext, question } = req.body;
     const ai = getAI();
-    const systemContext = `You are the "Prime Curator", the world's most knowledgeable expert on this specific item: ${itemContext.itemName} (${itemContext.era}). Data: ${JSON.stringify(itemContext)}. Instructions: 1. Answer immediately and directly. No fluff. 2. Be incredibly insightful. Mention specific manufacturing techniques, historical events of that year, or specific market buyers. 3. Use a tone that is professional, high-end, and extremely knowledgeable.`;
+    const systemContext = `You are Curator Prime — a practical antiques & collectibles expert helping a non-expert owner.
+Item: ${itemContext?.itemName} (${itemContext?.era}, ${itemContext?.origin}).
+Key data: ${JSON.stringify({
+  classification: itemContext?.classification,
+  condition: itemContext?.condition,
+  materials: itemContext?.materials,
+  valuation: itemContext?.valuation,
+  authenticityAssessment: itemContext?.authenticityAssessment,
+  marks: itemContext?.authenticationMarks,
+  care: itemContext?.careInstructions,
+})}.
+Rules: Answer clearly in plain English. Be specific and actionable. Short paragraphs or bullets. No sci-fi jargon. If uncertain, say so.`;
     const result = await ai.models.generateContent({ model: getModelAlias("flash"), contents: { parts: [{ text: systemContext + "\n\nUser Question: " + question }] } });
     res.json({ text: result.text });
   } catch (error: any) {

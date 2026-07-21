@@ -1,7 +1,7 @@
 
 import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { CollectionItem } from '../types';
-import { Search, Trash2, ArrowRight, ShieldCheck, ShieldAlert, Shield, Grip, List, Database, Lock, SlidersHorizontal, ArrowDownWideNarrow, ArrowUpNarrowWide, Clock, DollarSign, ALargeSmall, Filter, Check, X, ScanLine, Plus } from 'lucide-react';
+import { Search, Trash2, ArrowRight, ShieldCheck, ShieldAlert, Shield, List, Database, SlidersHorizontal, ArrowDownWideNarrow, ArrowUpNarrowWide, Clock, DollarSign, ALargeSmall, Filter, Check, X, Plus, Lock, Grip, ScanLine } from 'lucide-react';
 import { soundManager } from '../services/soundService';
 import { toast } from './Toast';
 
@@ -185,9 +185,9 @@ export const CollectionManager: React.FC<CollectionManagerProps> = ({ items, onD
           <div>
             <div className="flex items-center gap-2 mb-2 opacity-40">
                 <Lock size={10} className="text-emerald-500" />
-                <span className="text-[9px] font-mono text-white uppercase tracking-[0.3em]">Vault_Active</span>
+                <span className="text-[10px] font-semibold text-mute uppercase tracking-wider">Your collection</span>
             </div>
-            <h1 className="text-4xl font-display text-white tracking-widest uppercase">Vault</h1>
+            <h1 className="text-3xl font-display text-ink tracking-tight">Collection</h1>
           </div>
           
           <div className="text-right flex flex-col items-end gap-3">
