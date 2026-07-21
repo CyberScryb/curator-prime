@@ -282,107 +282,96 @@ export const Scanner = forwardRef<ScannerRef, ScannerProps>(({ onSave }, ref) =>
   const runAnalysis = async (images: string[]) => {
       setIsAnalyzing(true);
       setFastRequested(false);
-      setFastRunning(true); // Flash starts immediately in parallel
-      setLoadingLabel("Analyzing photo…");
+      setFastRunning(false);
+      setLoadingLabel("Identifying your item…");
 
       const sessionId = crypto.randomUUID();
       const desc = userDescription;
       let shown = false;
-      let preferFast = false;
+      let answerNow = false;
 
-      // User can flip this to take Flash as soon as it's ready (default waits for Pro)
-      const preferFastRef = { current: false };
-      let notifyPreferFast: (() => void) | null = null;
-      const preferFastSignal = new Promise<void>((resolve) => {
-        notifyPreferFast = resolve;
+      let resolveClick: (() => void) | null = null;
+      const clickPromise = new Promise<void>((resolve) => {
+        resolveClick = resolve;
       });
       answerNowResolver.current = () => {
-        preferFastRef.current = true;
-        preferFast = true;
+        answerNow = true;
         setFastRequested(true);
-        setLoadingLabel("Showing quick answer as soon as ready…");
-        notifyPreferFast?.();
+        setFastRunning(true);
+        setLoadingLabel("Getting a quick answer…");
+        resolveClick?.();
       };
 
-      // Start BOTH immediately so Answer now never waits to begin Flash work
+      // One deep Pro analysis — single call for stable, accurate IDs
       const fullPromise = analyzeItem(images, desc, { mode: "full" })
-        .then((result) => ({ ok: true as const, phase: "full" as const, result }))
-        .catch((error) => ({ ok: false as const, phase: "full" as const, error }));
-
-      const fastPromise = analyzeItem(images, desc, { mode: "fast" })
-        .then((result) => {
-          setFastRunning(false);
-          return { ok: true as const, phase: "fast" as const, result };
-        })
-        .catch((error) => {
-          setFastRunning(false);
-          return { ok: false as const, phase: "fast" as const, error };
-        });
-
-      const deliverFullInBackground = () => {
-        fullPromise.then(async (full) => {
-          if (full.ok === false) {
-            toast.info("Deep analysis unavailable — keeping quick answer");
-            return;
-          }
-          try {
-            await onSave(full.result, images[0], { phase: "full", sessionId });
-            toast.success("Updated with deeper analysis");
-            soundManager.playLock("high");
-          } catch (e) {
-            console.error(e);
-          }
-        });
-      };
+        .then((result) => ({ ok: true as const, result }))
+        .catch((error) => ({ ok: false as const, error }));
 
       try {
-        // If user already wants fast (or clicks soon), wait for Flash only
-        // Otherwise wait for Pro, but if Flash finishes first after click, use it
-        const raceForFirst = async () => {
-          // If they click Answer now, race becomes: wait for fast (and full if it wins earlier)
-          const clickOrFull = Promise.race([
-            fullPromise.then((r) => ({ source: "full" as const, r })),
-            preferFastSignal.then(() => ({ source: "click" as const, r: null as any })),
-          ]);
+        type Race =
+          | { kind: "full"; payload: { ok: true; result: AppraisalResult } | { ok: false; error: unknown } }
+          | { kind: "click" };
 
-          const event = await clickOrFull;
+        const first = await Promise.race([
+          fullPromise.then((payload) => ({ kind: "full" as const, payload })),
+          clickPromise.then(() => ({ kind: "click" as const })),
+        ]);
 
-          if (event.source === "full") {
-            return event.r;
-          }
+        if (first.kind === "full") {
+          // User waited for deep analysis — one stable result
+          if (first.payload.ok === false) throw first.payload.error;
+          await onSave(first.payload.result, images[0], { phase: "full", sessionId });
+          shown = true;
+        } else {
+          // Answer now: Flash only, then ONE Pro refine locked to that name
+          try {
+            const quick = await analyzeItem(images, desc, { mode: "fast" });
+            setFastRunning(false);
+            await onSave(quick, images[0], { phase: "fast", sessionId });
+            shown = true;
+            setIsAnalyzing(false);
+            setCapturedImages([]);
+            setUserDescription("");
+            setShowForm(false);
+            toast.info("Quick answer ready — refining details…");
 
-          // User clicked Answer now — take Flash (already running since start)
-          setLoadingLabel("Finishing quick answer…");
-          return await fastPromise;
-        };
+            // Ignore the in-flight fullPromise identity; refine with prior lock
+            analyzeItem(images, desc, {
+              mode: "full",
+              priorIdentification: quick,
+            })
+              .then(async (refined) => {
+                // Hard lock name if model still drifted
+                if (
+                  refined.itemName &&
+                  quick.itemName &&
+                  refined.itemName.toLowerCase() !== quick.itemName.toLowerCase()
+                ) {
+                  refined.alternateIdentifications = [
+                    { name: refined.itemName, reason: "Deeper-pass alternative" },
+                    ...(refined.alternateIdentifications || []),
+                  ].slice(0, 4);
+                  refined.itemName = quick.itemName;
+                  refined.classification = quick.classification || refined.classification;
+                  refined.category = quick.category || refined.category;
+                }
+                refined.analysisTier = "full";
+                await onSave(refined, images[0], { phase: "full", sessionId });
+                toast.success("Details refined");
+                soundManager.playLock("high");
+              })
+              .catch(() => toast.info("Keeping quick answer"));
 
-        const first = await raceForFirst();
-
-        if (first.ok === false) {
-          if (first.phase === "fast") {
-            toast.info("Quick answer failed — waiting for deep analysis…");
-            setLoadingLabel("Deep analysis in progress…");
+            return;
+          } catch (fastErr) {
+            setFastRunning(false);
+            toast.info("Quick answer failed — finishing deep analysis…");
+            setLoadingLabel("Identifying your item…");
             const full = await fullPromise;
             if (full.ok === false) throw full.error;
             await onSave(full.result, images[0], { phase: "full", sessionId });
             shown = true;
-          } else {
-            throw first.error;
           }
-        } else if (first.phase === "fast") {
-          await onSave(first.result, images[0], { phase: "fast", sessionId });
-          shown = true;
-          setIsAnalyzing(false);
-          setCapturedImages([]);
-          setUserDescription("");
-          setShowForm(false);
-          toast.info("Quick answer ready — refining with deeper analysis…");
-          deliverFullInBackground();
-          return;
-        } else {
-          // Full finished first (or before click)
-          await onSave(first.result, images[0], { phase: "full", sessionId });
-          shown = true;
         }
 
         setCapturedImages([]);

@@ -7,8 +7,6 @@ import crypto from "crypto";
 import {
   APPRAISAL_SYSTEM_V1,
   getAppraisalPrompt,
-  OCR_PASS_PROMPT,
-  enforceReadableBrand,
 } from "./appraisal.js";
 import { getLiveAnalysisPrompt } from "./liveAnalysis.js";
 
@@ -116,15 +114,25 @@ app.get("/api/health", (_req, res) => {
   res.json({ status: "ok" });
 });
 
-// Analyze Item — specialized pipeline:
-// 1) OCR / label read (always — brand text is ground truth)
-// 2) Full appraisal constrained by OCR (Flash or Pro by mode)
-// 3) Server enforcement if model ignored readable brand text
+// Analyze Item
+// mode=fast  → one Flash call (quick, consistent enough)
+// mode=full  → one Pro call (accurate default)
+// priorIdentification JSON → refine without renaming (keeps results stable)
 app.post("/api/analyze-item", upload.array("images"), async (req, res) => {
   try {
     const files = (req.files as Express.Multer.File[]) || [];
     const userDescription = req.body?.userDescription as string | undefined;
     const mode = String(req.body?.mode || "full").toLowerCase() === "fast" ? "fast" : "full";
+    let priorIdentification: string | undefined;
+    try {
+      const raw = req.body?.priorIdentification;
+      if (raw) {
+        priorIdentification =
+          typeof raw === "string" ? raw : JSON.stringify(raw);
+      }
+    } catch {
+      /* ignore */
+    }
     if (!files.length) return res.status(400).json({ error: "No images provided" });
 
     const ai = getAI();
@@ -132,33 +140,14 @@ app.post("/api/analyze-item", upload.array("images"), async (req, res) => {
       inlineData: { data: f.buffer.toString("base64"), mimeType: f.mimetype },
     }));
 
-    // ── Pass 1: OCR only on FULL path (Pro). Fast path = one Flash call for speed. ──
-    let visualFacts: any = null;
-    if (mode === "full") {
-      try {
-        const factsRes = await generateWithFallback(ai, "identify", {
-          contents: {
-            parts: [...imageParts, { text: OCR_PASS_PROMPT }],
-          },
-          config: {
-            responseMimeType: "application/json",
-            temperature: 0.1,
-          },
-        });
-        const factsText = (factsRes.text || "").replace(/```json|```/g, "").trim();
-        visualFacts = JSON.parse(factsText);
-      } catch (factsErr: any) {
-        console.warn("OCR pass failed (continuing):", factsErr?.message);
-      }
-    }
-
+    // Single-pass analysis for consistency (multi-pass was inventing different IDs each run)
     const prompt = getAppraisalPrompt(
       files.length,
       userDescription,
-      visualFacts ? JSON.stringify(visualFacts, null, 2) : undefined
+      undefined,
+      priorIdentification
     );
 
-    // Fast = single Flash shot; Full = Pro (after OCR)
     const analysisTier = mode === "fast" ? "flash" : "identify";
 
     const requestConfig = {
@@ -166,7 +155,8 @@ app.post("/api/analyze-item", upload.array("images"), async (req, res) => {
       config: {
         systemInstruction: APPRAISAL_SYSTEM_V1,
         responseMimeType: "application/json",
-        temperature: mode === "fast" ? 0.25 : 0.15,
+        // Near-deterministic for stable IDs on re-scan
+        temperature: 0.05,
         responseSchema: {
           type: Type.OBJECT,
           properties: {
@@ -318,19 +308,50 @@ app.post("/api/analyze-item", upload.array("images"), async (req, res) => {
       },
     };
 
-    // ── Pass 2: appraisal constrained by OCR evidence ──
+    // Single model call — more stable IDs than multi-pass / multi-model races
     const response = await generateWithFallback(ai, analysisTier as any, requestConfig);
 
     let cleanText = (response.text || "").replace(/```json|```/g, "").trim();
     let parsedResult = sanitizeResult(JSON.parse(cleanText));
 
-    if (visualFacts) {
-      parsedResult.visualFacts = visualFacts;
-      if (!parsedResult.observedColors?.length && visualFacts.observedColors) {
-        parsedResult.observedColors = visualFacts.observedColors;
+    // If refining, hard-lock core identity from prior when model still drifted
+    if (priorIdentification) {
+      try {
+        const prior = JSON.parse(priorIdentification);
+        if (prior?.itemName && parsedResult.itemName) {
+          const priorBrand = String(prior.itemName).split(/\s+/)[0] || "";
+          const nameChanged =
+            String(parsedResult.itemName).toLowerCase() !==
+            String(prior.itemName).toLowerCase();
+          // Keep prior name unless first token of prior is clearly wrong vs authentication marks
+          if (nameChanged && priorBrand.length >= 2) {
+            const marks = [
+              ...(parsedResult.authenticationMarks || []),
+              ...(prior.authenticationMarks || []),
+            ]
+              .join(" ")
+              .toLowerCase();
+            const priorInMarks = marks.includes(priorBrand.toLowerCase());
+            const newNameDropsBrand = !String(parsedResult.itemName)
+              .toLowerCase()
+              .includes(priorBrand.toLowerCase());
+            if (priorInMarks || newNameDropsBrand) {
+              parsedResult.alternateIdentifications = [
+                {
+                  name: parsedResult.itemName,
+                  reason: "Pro alternative during refine",
+                },
+                ...(parsedResult.alternateIdentifications || []),
+              ].slice(0, 4);
+              parsedResult.itemName = prior.itemName;
+              if (prior.classification) parsedResult.classification = prior.classification;
+              if (prior.category) parsedResult.category = prior.category;
+            }
+          }
+        }
+      } catch {
+        /* ignore bad prior */
       }
-      // Specialty: never drop a brand that was readable on the object
-      parsedResult = enforceReadableBrand(parsedResult, visualFacts);
     }
 
     if (typeof parsedResult.confidence === "number") {
@@ -355,8 +376,13 @@ app.post("/api/analyze-item", upload.array("images"), async (req, res) => {
     if (mode === "fast") {
       parsedResult.identificationDisclaimer =
         (parsedResult.identificationDisclaimer || "") +
-        " Quick answer — a deeper Pro analysis may refine this shortly.";
-    } else if (conf < 85 && !/guess|estimate|uncertain|not (a |an )?(certified|confirmed)/i.test(parsedResult.identificationDisclaimer)) {
+        " Quick answer — deeper analysis may refine details shortly.";
+    } else if (
+      conf < 85 &&
+      !/guess|estimate|uncertain|not (a |an )?(certified|confirmed)/i.test(
+        parsedResult.identificationDisclaimer
+      )
+    ) {
       parsedResult.identificationDisclaimer +=
         " Confidence is moderate/low — this may be a best guess.";
     }
@@ -369,7 +395,7 @@ app.post("/api/analyze-item", upload.array("images"), async (req, res) => {
     };
     parsedResult.modelUsed = getModelAlias(analysisTier as any);
     parsedResult.analysisTier = mode;
-    parsedResult.pipeline = "ocr-first-v2";
+    parsedResult.pipeline = "single-pass-stable-v3";
     res.json(parsedResult);
   } catch (error: any) {
     console.error("Analysis Error:", error);

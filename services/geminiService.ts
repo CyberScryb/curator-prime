@@ -28,10 +28,17 @@ async function readApiJson<T = any>(response: Response): Promise<T> {
 
 export type AnalyzeMode = "fast" | "full";
 
+export type AnalyzeOptions = {
+  mode?: AnalyzeMode;
+  signal?: AbortSignal;
+  /** When refining, pass prior ID so Pro doesn't invent a new name */
+  priorIdentification?: Partial<AppraisalResult> | Record<string, unknown>;
+};
+
 export const analyzeItem = async (
   imageBuffers: string[],
   userDescription?: string,
-  options?: { mode?: AnalyzeMode; signal?: AbortSignal }
+  options?: AnalyzeOptions
 ): Promise<AppraisalResult> => {
   const mode: AnalyzeMode = options?.mode === "fast" ? "fast" : "full";
   const formData = new FormData();
@@ -40,6 +47,19 @@ export const analyzeItem = async (
   });
   if (userDescription) formData.append("userDescription", userDescription);
   formData.append("mode", mode);
+  if (options?.priorIdentification) {
+    formData.append(
+      "priorIdentification",
+      JSON.stringify({
+        itemName: (options.priorIdentification as any).itemName,
+        category: (options.priorIdentification as any).category,
+        classification: (options.priorIdentification as any).classification,
+        authenticationMarks: (options.priorIdentification as any).authenticationMarks,
+        brandEvidence: (options.priorIdentification as any).brandEvidence,
+        confidence: (options.priorIdentification as any).confidence,
+      })
+    );
+  }
 
   const response = await fetch("/api/analyze-item", {
     method: "POST",
