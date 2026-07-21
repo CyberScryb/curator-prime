@@ -33,26 +33,40 @@ const getAI = () => {
 
 /**
  * Model routing (Google Gemini via @google/genai):
- * - Identification: Gemini 2.5 Pro by default (strong vision, fewer flashy wrong brands).
- * - Override with env IDENTIFICATION_MODEL (e.g. gemini-3.1-pro-preview).
- * - Live / chat: Flash for speed.
+ *
+ * - identify: best vision model for "what is this?" (default 3.1 Pro when custom key exists)
+ * - flash: cheap/fast for visual pre-pass, live lens, chat
+ * - pro: same family as identify (used as alias)
+ *
+ * Override anytime with env:
+ *   IDENTIFICATION_MODEL=gemini-3.1-pro-preview | gemini-2.5-pro | ...
+ *   FLASH_MODEL=gemini-3.1-flash-preview | gemini-2.5-flash | ...
+ *
+ * Note: there is no separate "3.5 flash" ID in this stack unless Google ships it —
+ * set FLASH_MODEL to whatever model name your key has access to.
  */
 const getModelAlias = (tier: "pro" | "flash" | "identify") => {
-  if (tier === "identify") {
+  const hasCustomKey = !!process.env.CUSTOM_GEMINI_API_KEY;
+
+  if (tier === "identify" || tier === "pro") {
     return (
       process.env.IDENTIFICATION_MODEL ||
       process.env.CUSTOM_IDENTIFY_MODEL ||
-      "gemini-2.5-pro"
+      (hasCustomKey ? "gemini-3.1-pro-preview" : "gemini-2.5-pro")
     );
   }
-  const hasCustomKey = !!process.env.CUSTOM_GEMINI_API_KEY;
-  if (tier === "pro") return hasCustomKey ? "gemini-3.1-pro-preview" : "gemini-2.5-pro";
-  return hasCustomKey ? "gemini-3.1-flash-preview" : "gemini-2.5-flash";
+
+  // flash
+  return (
+    process.env.FLASH_MODEL ||
+    (hasCustomKey ? "gemini-3.1-flash-preview" : "gemini-2.5-flash")
+  );
 };
 
 const getFallbackModel = (tier: "pro" | "flash" | "identify") => {
-  if (tier === "identify") return "gemini-2.5-pro";
-  return tier === "pro" ? "gemini-2.5-pro" : "gemini-2.5-flash";
+  // Stable fallbacks if a preview model 404s or rate-limits
+  if (tier === "flash") return "gemini-2.5-flash";
+  return "gemini-2.5-pro";
 };
 
 async function generateWithFallback(
@@ -99,10 +113,10 @@ app.post("/api/analyze-item", upload.array("images"), async (req, res) => {
       inlineData: { data: f.buffer.toString("base64"), mimeType: f.mimetype },
     }));
 
-    // ── Pass 1: extract only what is visible (blocks brand hallucination) ──
+    // ── Pass 1: cheap visual facts (Flash) — colors/logos before final ID ──
     let visualFacts: any = null;
     try {
-      const factsRes = await generateWithFallback(ai, "identify", {
+      const factsRes = await generateWithFallback(ai, "flash", {
         contents: {
           parts: [...imageParts, { text: VISUAL_FACTS_PROMPT }],
         },
