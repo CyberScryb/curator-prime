@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { AppTab, CollectionItem, AppraisalResult } from './types';
 import { CollectionItemSchema } from './lib/schemas';
-import { Scanner, ScannerRef } from './components/ScanTerminal';
+import { Scanner, ScannerRef, ScanResultMeta } from './components/ScanTerminal';
 import { CollectionManager } from './components/VaultTerminal';
 import { MarketTrends } from './components/DataTerminal';
 import { ItemResult } from './components/ItemResult';
@@ -28,6 +28,8 @@ const App: React.FC = () => {
 
   const scannerRef = useRef<ScannerRef>(null);
   const reportedDriftItems = useRef<Set<string>>(new Set());
+  /** Tracks in-progress scan so Pro can upgrade a Flash quick answer */
+  const refineSessionRef = useRef<{ sessionId: string; itemId: string } | null>(null);
 
   // Toast State
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
@@ -90,95 +92,115 @@ const App: React.FC = () => {
 
   const removeToast = (id: string) => setToasts(prev => prev.filter(t => t.id !== id));
 
-  const saveToCollection = async (result: AppraisalResult, primaryImage: string) => {
+  const saveToCollection = async (
+    result: AppraisalResult,
+    primaryImage: string,
+    meta?: ScanResultMeta
+  ) => {
     if (!user) {
       toast.error("Sign in required to vault items");
       return;
     }
 
     const normalized = normalizeAppraisal(result);
-    const existingIndex = collection.findIndex(
-        item => item.itemName === normalized.itemName &&
-                item.era === normalized.era &&
-                item.classification === normalized.classification
-    );
+    (normalized as any).analysisTier = (result as any).analysisTier || meta?.phase || "full";
+
+    // Pro refining a Flash result for this scan session → update same item id
+    const refine = refineSessionRef.current;
+    const isRefinement =
+      meta?.phase === "full" &&
+      refine &&
+      meta.sessionId === refine.sessionId;
+
+    const existingIndex = isRefinement
+      ? collection.findIndex((i) => i.id === refine!.itemId)
+      : collection.findIndex(
+          (item) =>
+            item.itemName === normalized.itemName &&
+            item.era === normalized.era &&
+            item.classification === normalized.classification
+        );
 
     // Always surface appraisal results first — vault write is secondary.
-    // Previously a failed Firestore write meant the user never saw the scan.
     try {
-        if (existingIndex > -1) {
-            const existingItem = collection[existingIndex];
-            const prepared = await buildVaultItem(normalized, primaryImage, user.uid, existingItem.id);
-            const existingImages = existingItem.images || [existingItem.imageUrl];
+        if (isRefinement || existingIndex > -1) {
+            const existingItem =
+              isRefinement
+                ? collection.find((i) => i.id === refine!.itemId) ||
+                  (selectedItem?.id === refine!.itemId ? selectedItem : null)
+                : collection[existingIndex];
+            const itemId = existingItem?.id || refine!.itemId;
+            const prepared = await buildVaultItem(
+              normalized,
+              primaryImage,
+              user.uid,
+              itemId
+            );
+            const existingImages = existingItem?.images || (existingItem?.imageUrl ? [existingItem.imageUrl] : []);
             const combinedImages = Array.from(
               new Set([...existingImages, ...(prepared.images || [prepared.imageUrl])].filter(Boolean))
             ).slice(0, 8);
 
-            let newTier = existingItem.provenance?.trustTier || 'Level 1 (Snapshot)';
+            let newTier = existingItem?.provenance?.trustTier || 'Level 1 (Snapshot)';
             if (combinedImages.length >= 3) newTier = 'Level 3 (Verified)';
             else if (combinedImages.length === 2) newTier = 'Level 2 (Visual)';
 
             const updatePayload = stripUndefined({
-                valuation: prepared.valuation,
-                forecast: prepared.forecast,
-                condition: prepared.condition,
-                conditionScore: prepared.conditionScore,
-                historicalContext:
-                  (prepared.historicalContext?.length || 0) > (existingItem.historicalContext?.length || 0)
-                    ? prepared.historicalContext
-                    : existingItem.historicalContext,
+                ...prepared,
+                id: itemId,
+                userId: user.uid,
                 images: combinedImages,
-                imageUrl: combinedImages[0],
+                imageUrl: combinedImages[0] || prepared.imageUrl,
                 provenance: {
-                    ...existingItem.provenance,
+                    ...(existingItem?.provenance || prepared.provenance),
                     ...prepared.provenance,
                     trustTier: newTier as CollectionItem['provenance']['trustTier'],
                 },
                 dateScanned: new Date().toISOString(),
-                rarityScore: prepared.rarityScore,
-                rarityDescription: prepared.rarityDescription,
-                materials: prepared.materials,
-                careInstructions: prepared.careInstructions,
-                visualHotspots: prepared.visualHotspots,
-                keyFeatures: prepared.keyFeatures,
-                authenticationMarks: prepared.authenticationMarks,
-                comparableSales: prepared.comparableSales,
-                sellingProfile: prepared.sellingProfile,
-                restoration: prepared.restoration,
-                forensicInsight: prepared.forensicInsight,
-                authenticityAssessment: prepared.authenticityAssessment,
-                authenticityScore: prepared.authenticityScore,
-                insightfulPrompts: prepared.insightfulPrompts,
-                confidence: prepared.confidence,
+                analysisTier: 'full',
             });
 
             const mergedView: CollectionItem = {
-              ...existingItem,
+              ...(existingItem || prepared),
               ...prepared,
-              id: existingItem.id,
+              id: itemId,
+              userId: user.uid,
               images: combinedImages,
-              imageUrl: combinedImages[0],
+              imageUrl: combinedImages[0] || prepared.imageUrl,
               provenance: updatePayload.provenance as CollectionItem['provenance'],
+              analysisTier: 'full',
             };
             setSelectedItem(mergedView);
             setActiveTab('COLLECTION');
+            if (isRefinement) refineSessionRef.current = null;
 
-            const itemRef = doc(db, 'items', existingItem.id);
-            await updateDoc(itemRef, updatePayload as any).catch(e =>
-              handleFirestoreError(e, 'update', `items/${existingItem.id}`)
-            );
+            if (user.emailVerified) {
+              const itemRef = doc(db, 'items', itemId);
+              // Prefer setDoc merge so refine works even if fast path never wrote
+              await setDoc(itemRef, updatePayload as any, { merge: true }).catch(e =>
+                handleFirestoreError(e, 'update', `items/${itemId}`)
+              );
+            }
 
             soundManager.playLock('high');
-            toast.success("Updated in your collection");
+            if (!isRefinement) toast.success("Updated in your collection");
         } else {
             const newItem = await buildVaultItem(normalized, primaryImage, user.uid);
+            (newItem as any).analysisTier = meta?.phase || 'full';
 
-            // Show results immediately so a vault failure still leaves the appraisal on screen
             setSelectedItem(newItem);
             setActiveTab('COLLECTION');
 
+            if (meta?.phase === 'fast' && meta.sessionId) {
+              refineSessionRef.current = { sessionId: meta.sessionId, itemId: newItem.id };
+            }
+
             if (!user.emailVerified) {
-              toast.info("Results ready. Verify your email to save permanently.");
+              toast.info(
+                meta?.phase === 'fast'
+                  ? 'Quick answer ready. Verify email to save permanently.'
+                  : 'Results ready. Verify your email to save permanently.'
+              );
               return;
             }
 
@@ -187,7 +209,7 @@ const App: React.FC = () => {
             );
 
             soundManager.playLock('standard');
-            toast.success("Saved to your collection");
+            if (meta?.phase !== 'fast') toast.success("Saved to your collection");
         }
     } catch (error) {
         console.error("Save error:", error);

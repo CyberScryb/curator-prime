@@ -26,18 +26,29 @@ async function readApiJson<T = any>(response: Response): Promise<T> {
   }
 }
 
+export type AnalyzeMode = "fast" | "full";
+
 export const analyzeItem = async (
   imageBuffers: string[],
-  userDescription?: string
+  userDescription?: string,
+  options?: { mode?: AnalyzeMode; signal?: AbortSignal }
 ): Promise<AppraisalResult> => {
+  const mode: AnalyzeMode = options?.mode === "fast" ? "fast" : "full";
   const formData = new FormData();
   imageBuffers.forEach((buffer, i) => {
     formData.append("images", dataURLToBlob(buffer), `image-${i}.jpg`);
   });
   if (userDescription) formData.append("userDescription", userDescription);
+  formData.append("mode", mode);
 
-  const response = await fetch("/api/analyze-item", { method: "POST", body: formData });
-  const payload = await readApiJson<AppraisalResult & { error?: string }>(response);
+  const response = await fetch("/api/analyze-item", {
+    method: "POST",
+    body: formData,
+    signal: options?.signal,
+  });
+  const payload = await readApiJson<
+    AppraisalResult & { error?: string; analysisTier?: string }
+  >(response);
   if (!response.ok) throw new Error(payload.error || `Analysis failed (${response.status})`);
 
   const result = payload as AppraisalResult;
@@ -51,11 +62,11 @@ export const analyzeItem = async (
       result.provenance?.trustTier ||
       (imageBuffers.length >= 3 ? "Level 3 (Verified)" : "Level 1 (Snapshot)"),
   };
-  // Normalize confidence to 0–100 for UI
   if (typeof result.confidence === "number" && result.confidence > 0 && result.confidence <= 1) {
     result.confidence = Math.round(result.confidence * 100);
   }
   result.images = imageBuffers;
+  result.analysisTier = (payload.analysisTier as AnalyzeMode) || mode;
   return result;
 };
 

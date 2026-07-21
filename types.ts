@@ -75,6 +75,9 @@ export interface AppraisalResult {
   brandEvidence?: string;
   observedColors?: string[];
   alternateIdentifications?: { name: string; reason: string }[];
+  /** 'fast' = Flash quick answer; 'full' = Pro deep analysis */
+  analysisTier?: "fast" | "full";
+  modelUsed?: string;
 }
 
 export interface CollectionItem extends AppraisalResult {

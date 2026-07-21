@@ -346,6 +346,16 @@ export const ItemResult: React.FC<ItemResultProps> = ({ result, imageData, onBac
         </div>
 
         <div className="px-4 space-y-4 mt-2">
+          {item.analysisTier === 'fast' && (
+            <div className="rounded-2xl border border-brand/35 bg-brand/10 p-3.5 text-xs text-brandsoft flex items-start gap-2">
+              <Loader2 size={14} className="animate-spin shrink-0 mt-0.5" />
+              <div>
+                <div className="font-semibold text-ink mb-0.5">Quick answer</div>
+                Deeper Pro analysis is still running — this page will update when it’s ready.
+              </div>
+            </div>
+          )}
+
           {/* Always-on disclaimer when guessing or any AI ID */}
           <div
             className={`rounded-2xl border p-3.5 text-xs leading-relaxed ${

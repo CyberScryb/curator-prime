@@ -6,8 +6,17 @@ import { AppraisalResult, LiveAnalysisUpdate, LensMode } from '../types';
 import { soundManager } from '../services/soundService';
 import { toast } from './Toast';
 
+export type ScanResultMeta = {
+  phase: "fast" | "full";
+  sessionId: string;
+};
+
 interface ScannerProps {
-  onSave: (result: AppraisalResult, imageData: string) => void | Promise<void>;
+  onSave: (
+    result: AppraisalResult,
+    imageData: string,
+    meta?: ScanResultMeta
+  ) => void | Promise<void>;
 }
 
 export interface ScannerRef {
@@ -40,6 +49,10 @@ export const Scanner = forwardRef<ScannerRef, ScannerProps>(({ onSave }, ref) =>
   const [userDescription, setUserDescription] = useState("");
   const [showForm, setShowForm] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [loadingLabel, setLoadingLabel] = useState("Deep analysis in progress…");
+  const [fastRequested, setFastRequested] = useState(false);
+  const [fastRunning, setFastRunning] = useState(false);
+  const answerNowResolver = useRef<(() => void) | null>(null);
   const [liveData, setLiveData] = useState<LiveAnalysisUpdate | null>(null);
   
   const [loupePosition, setLoupePosition] = useState({ x: 50, y: 50 }); 
@@ -268,20 +281,104 @@ export const Scanner = forwardRef<ScannerRef, ScannerProps>(({ onSave }, ref) =>
 
   const runAnalysis = async (images: string[]) => {
       setIsAnalyzing(true);
+      setFastRequested(false);
+      setFastRunning(false);
+      setLoadingLabel("Deep analysis in progress…");
+
+      const sessionId = crypto.randomUUID();
+      const desc = userDescription;
+      let shown = false;
+
+      // Button can resolve this to start Flash path
+      const waitForAnswerNow = new Promise<void>((resolve) => {
+        answerNowResolver.current = resolve;
+      });
+
+      const fullPromise = analyzeItem(images, desc, { mode: "full" })
+        .then((result) => ({ ok: true as const, phase: "full" as const, result }))
+        .catch((error) => ({ ok: false as const, phase: "full" as const, error }));
+
+      const fastPromise = waitForAnswerNow.then(async () => {
+        setFastRunning(true);
+        setLoadingLabel("Getting a quick answer…");
+        try {
+          const result = await analyzeItem(images, desc, { mode: "fast" });
+          return { ok: true as const, phase: "fast" as const, result };
+        } catch (error) {
+          return { ok: false as const, phase: "fast" as const, error };
+        } finally {
+          setFastRunning(false);
+        }
+      });
+
       try {
-          const result = await analyzeItem(images, userDescription);
-          // Await vault handoff so spinner covers compress/save and errors surface cleanly
-          await onSave(result, images[0]);
+        // First result: either user clicked Answer now (Flash) or Pro finished first
+        const first = await Promise.race([fullPromise, fastPromise]);
+
+        if (first.ok === false) {
+          // If fast failed but full may still run, wait for full
+          if (first.phase === "fast") {
+            toast.info("Quick answer failed — continuing deep analysis…");
+            setLoadingLabel("Deep analysis in progress…");
+            const full = await fullPromise;
+            if (full.ok === false) throw full.error;
+            await onSave(full.result, images[0], { phase: "full", sessionId });
+            shown = true;
+          } else {
+            throw first.error;
+          }
+        } else if (first.phase === "fast") {
+          await onSave(first.result, images[0], { phase: "fast", sessionId });
+          shown = true;
+          setIsAnalyzing(false);
           setCapturedImages([]);
           setUserDescription("");
           setShowForm(false);
+          toast.info("Quick answer ready — refining with deeper analysis…");
+
+          // Pro continues and upgrades the same scan
+          fullPromise.then(async (full) => {
+            if (full.ok === false) {
+              toast.info("Deep analysis unavailable — keeping quick answer");
+              return;
+            }
+            try {
+              await onSave(full.result, images[0], { phase: "full", sessionId });
+              toast.success("Updated with deeper analysis");
+              soundManager.playLock("high");
+            } catch (e) {
+              console.error(e);
+            }
+          });
+          return;
+        } else {
+          // Full finished first (user never clicked Answer now, or Pro was fast)
+          await onSave(first.result, images[0], { phase: "full", sessionId });
+          shown = true;
+        }
+
+        setCapturedImages([]);
+        setUserDescription("");
+        setShowForm(false);
       } catch (e) {
-          triggerHaptic('alert');
-          toast.error("Analysis Error: " + (e as Error).message);
-          setCapturedImages([]);
+        triggerHaptic("alert");
+        const msg = e instanceof Error ? e.message : String(e);
+        toast.error("Analysis Error: " + msg);
+        if (!shown) setCapturedImages([]);
       } finally {
-          setIsAnalyzing(false);
+        answerNowResolver.current = null;
+        setIsAnalyzing(false);
+        setFastRequested(false);
+        setFastRunning(false);
       }
+  };
+
+  const handleAnswerNow = () => {
+    if (fastRequested) return;
+    setFastRequested(true);
+    soundManager.playClick();
+    triggerHaptic("click");
+    answerNowResolver.current?.();
   };
 
   const handleGallerySelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -502,69 +599,55 @@ export const Scanner = forwardRef<ScannerRef, ScannerProps>(({ onSave }, ref) =>
 
       {/* === LOADING STATE === */}
       {isAnalyzing && (
-          <div className="absolute inset-0 z-[100] bg-black flex flex-col items-center justify-center p-8 animate-in fade-in duration-500">
-              
-              {/* Premium Processing Visual */}
-              <div className="relative w-48 h-48 mb-16">
-                  {/* Rotating Structural Rings */}
-                  <div className="absolute inset-0 border-[0.5px] border-orange-500/10 rounded-full"></div>
-                  <div className="absolute inset-4 border-[0.5px] border-red-500/20 rounded-full animate-[spin_10s_linear_infinite]"></div>
-                  <div className="absolute inset-8 border-[0.5px] border-orange-500/30 rounded-full animate-[spin_15s_linear_infinite_reverse]"></div>
-                  
-                  {/* Pulse Field */}
-                  <div className="absolute inset-12 bg-orange-500/5 rounded-full animate-pulse"></div>
+          <div className="absolute inset-0 z-[100] bg-canvas/95 backdrop-blur-md flex flex-col items-center justify-center p-6 animate-in fade-in duration-300">
+              <div className="w-full max-w-sm rounded-3xl border border-line bg-surface shadow-card p-8 text-center">
+                  <div className="relative w-28 h-28 mx-auto mb-6">
+                      <div className="absolute inset-0 rounded-full border border-brand/20" />
+                      <div className="absolute inset-2 rounded-full border border-brandsoft/30 animate-[spin_8s_linear_infinite]" />
+                      <div className="absolute inset-5 rounded-full bg-brand/10 animate-pulse" />
+                      <div className="absolute inset-0 flex items-center justify-center">
+                          <Scan className="text-brandsoft" size={32} />
+                      </div>
+                      <div className="absolute inset-x-4 top-0 h-0.5 bg-gradient-to-r from-transparent via-brandsoft to-transparent animate-scan opacity-80" />
+                  </div>
 
-                  <div className="absolute inset-0 flex items-center justify-center">
-                       {/* Hexagon Fragmenter */}
-                       <div className="w-24 h-24 bg-orange-500/10 border border-orange-500/40 shadow-[0_0_60px_rgba(249,115,22,0.2)] flex flex-col items-center justify-center overflow-hidden" 
-                            style={{ clipPath: 'polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%)' }}>
-                            
-                            {/* Scanning Line inside Hexagon */}
-                            <div className="absolute inset-x-0 h-1 bg-orange-500/40 animate-[scanline_2s_ease-in-out_infinite]"></div>
-                            
-                            {/* Decrypting Numbers */}
-                            <div className="flex flex-col items-center gap-0.5 opacity-40">
-                                <span className="text-[7px] font-mono text-white animate-pulse">0x8F2A</span>
-                                <span className="text-[7px] font-mono text-white animate-pulse delay-75">39.012</span>
-                                <span className="text-[7px] font-mono text-white animate-pulse delay-150">SYNC_77</span>
-                            </div>
-                       </div>
+                  <h3 className="font-display text-2xl text-ink mb-2">
+                    {fastRunning ? "Quick answer…" : "Analyzing…"}
+                  </h3>
+                  <p className="text-sm text-mute mb-6 leading-relaxed">
+                    {loadingLabel}
+                  </p>
+
+                  <div className="h-1.5 w-full rounded-full bg-elevated overflow-hidden mb-6">
+                      <div
+                        className={`h-full rounded-full bg-brand transition-all duration-700 ${
+                          fastRunning ? "w-2/3 animate-pulse" : "w-1/2 animate-pulse"
+                        }`}
+                      />
                   </div>
-                  
-                  {/* Orbital Trackers (Fitted with glowing particles) */}
-                  <div className="absolute top-0 left-1/2 -translate-x-1/2 w-0.5 h-6 bg-gradient-to-t from-orange-500 to-transparent animate-[spin_4s_linear_infinite]" style={{ transformOrigin: '50% 96px' }}>
-                      <div className="absolute top-0 left-1/2 -translate-x-1/2 w-1.5 h-1.5 bg-orange-500 rounded-full shadow-[0_0_15px_rgba(249,115,22,1)]"></div>
-                  </div>
-                  
-                  <div className="absolute top-2 left-1/2 -translate-x-1/2 w-0.5 h-4 bg-gradient-to-t from-red-500 to-transparent animate-[spin_2.5s_linear_infinite_reverse]" style={{ transformOrigin: '50% 88px' }}>
-                      <div className="absolute top-0 left-1/2 -translate-x-1/2 w-1 h-1 bg-red-500 rounded-full shadow-[0_0_10px_rgba(239,68,68,1)]"></div>
-                  </div>
-              </div>
-              
-              {/* Typography & Decryption Feedback */}
-              <div className="text-center relative">
-                  <div className="flex items-baseline justify-center gap-4 mb-4">
-                      <div className="h-[1px] w-12 bg-gradient-to-r from-transparent to-orange-500/40"></div>
-                      <h3 className="font-display text-3xl text-white tracking-tight">Analyzing…</h3>
-                      <div className="h-[1px] w-12 bg-gradient-to-l from-transparent to-orange-500/40"></div>
-                  </div>
-                  
-                  <div className="relative flex flex-col items-center">
-                      <div className="flex items-center gap-3 px-6 py-2 bg-zinc-950 border border-white/5 rounded-full backdrop-blur-xl">
-                          <Zap size={12} className="text-orange-500 animate-pulse" />
-                          <div className="text-orange-400 text-xs font-medium">
-                              <span className="inline-block">
-                                  Identifying item, value &amp; authenticity
-                              </span>
-                          </div>
-                      </div>
-                      
-                      <div className="mt-8 grid grid-cols-5 gap-1.5 opacity-20">
-                          {[...Array(5)].map((_, i) => (
-                              <div key={i} className={`h-1 w-8 rounded-full bg-orange-500 animate-pulse`} style={{ animationDelay: `${i * 150}ms` }} />
-                          ))}
-                      </div>
-                  </div>
+
+                  {!fastRequested ? (
+                    <button
+                      type="button"
+                      onClick={handleAnswerNow}
+                      className="w-full py-3.5 rounded-2xl bg-brand text-white text-sm font-semibold shadow-glow hover:bg-brandsoft transition-colors flex items-center justify-center gap-2"
+                    >
+                      <Zap size={16} />
+                      Answer now
+                      <span className="text-white/70 font-normal text-xs">(faster)</span>
+                    </button>
+                  ) : (
+                    <div className="w-full py-3.5 rounded-2xl border border-brand/40 bg-brand/10 text-brandsoft text-sm font-medium flex items-center justify-center gap-2">
+                      <Zap size={16} className={fastRunning ? "animate-pulse" : ""} />
+                      {fastRunning ? "Preparing quick answer…" : "Quick path selected"}
+                    </div>
+                  )}
+
+                  <p className="text-[11px] text-faint mt-4 leading-relaxed">
+                    {fastRequested
+                      ? "You’ll see a quick result first, then a deeper Pro pass may update it."
+                      : "Deep analysis is more careful. Need results sooner? Tap Answer now."}
+                  </p>
               </div>
           </div>
       )}

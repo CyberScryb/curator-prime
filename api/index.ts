@@ -115,11 +115,14 @@ app.get("/api/health", (_req, res) => {
   res.json({ status: "ok" });
 });
 
-// Analyze Item (Multipart) — two-pass: visual facts → constrained appraisal
+// Analyze Item (Multipart)
+// mode=fast  → single Flash pass (quick answer)
+// mode=full  → visual facts + Pro (default deeper analysis)
 app.post("/api/analyze-item", upload.array("images"), async (req, res) => {
   try {
     const files = (req.files as Express.Multer.File[]) || [];
     const userDescription = req.body?.userDescription as string | undefined;
+    const mode = String(req.body?.mode || "full").toLowerCase() === "fast" ? "fast" : "full";
     if (!files.length) return res.status(400).json({ error: "No images provided" });
 
     const ai = getAI();
@@ -127,22 +130,24 @@ app.post("/api/analyze-item", upload.array("images"), async (req, res) => {
       inlineData: { data: f.buffer.toString("base64"), mimeType: f.mimetype },
     }));
 
-    // ── Pass 1: cheap visual facts (Flash) — colors/logos before final ID ──
+    // ── Optional Pass 1: visual facts (skip in fast mode for speed) ──
     let visualFacts: any = null;
-    try {
-      const factsRes = await generateWithFallback(ai, "flash", {
-        contents: {
-          parts: [...imageParts, { text: VISUAL_FACTS_PROMPT }],
-        },
-        config: {
-          responseMimeType: "application/json",
-          temperature: 0.2,
-        },
-      });
-      const factsText = (factsRes.text || "").replace(/```json|```/g, "").trim();
-      visualFacts = JSON.parse(factsText);
-    } catch (factsErr: any) {
-      console.warn("Visual facts pass failed (continuing):", factsErr?.message);
+    if (mode === "full") {
+      try {
+        const factsRes = await generateWithFallback(ai, "flash", {
+          contents: {
+            parts: [...imageParts, { text: VISUAL_FACTS_PROMPT }],
+          },
+          config: {
+            responseMimeType: "application/json",
+            temperature: 0.2,
+          },
+        });
+        const factsText = (factsRes.text || "").replace(/```json|```/g, "").trim();
+        visualFacts = JSON.parse(factsText);
+      } catch (factsErr: any) {
+        console.warn("Visual facts pass failed (continuing):", factsErr?.message);
+      }
     }
 
     const prompt = getAppraisalPrompt(
@@ -151,12 +156,15 @@ app.post("/api/analyze-item", upload.array("images"), async (req, res) => {
       visualFacts ? JSON.stringify(visualFacts, null, 2) : undefined
     );
 
+    // Fast = Flash model; Full = Pro/identify chain
+    const analysisTier = mode === "fast" ? "flash" : "identify";
+
     const requestConfig = {
       contents: { parts: [...imageParts, { text: prompt }] },
       config: {
         systemInstruction: APPRAISAL_SYSTEM_V1,
         responseMimeType: "application/json",
-        temperature: 0.35,
+        temperature: mode === "fast" ? 0.4 : 0.35,
         responseSchema: {
           type: Type.OBJECT,
           properties: {
@@ -308,13 +316,12 @@ app.post("/api/analyze-item", upload.array("images"), async (req, res) => {
       },
     };
 
-    // ── Pass 2: full appraisal using visual facts as context ──
-    const response = await generateWithFallback(ai, "identify", requestConfig);
+    // ── Main appraisal: Flash (fast) or Pro (full) ──
+    const response = await generateWithFallback(ai, analysisTier as any, requestConfig);
 
     let cleanText = (response.text || "").replace(/```json|```/g, "").trim();
     const parsedResult = sanitizeResult(JSON.parse(cleanText));
 
-    // Attach pass-1 facts for UI
     if (visualFacts) {
       parsedResult.visualFacts = visualFacts;
       if (!parsedResult.observedColors?.length && visualFacts.observedColors) {
@@ -322,7 +329,6 @@ app.post("/api/analyze-item", upload.array("images"), async (req, res) => {
       }
     }
 
-    // Normalize confidence 0–100
     if (typeof parsedResult.confidence === "number") {
       if (parsedResult.confidence > 0 && parsedResult.confidence <= 1) {
         parsedResult.confidence = Math.round(parsedResult.confidence * 100);
@@ -335,7 +341,6 @@ app.post("/api/analyze-item", upload.array("images"), async (req, res) => {
       parsedResult.confidence = 50;
     }
 
-    // Ensure a disclaimer always exists (guesses are OK — must be labeled)
     const conf = parsedResult.confidence;
     if (!parsedResult.identificationDisclaimer) {
       parsedResult.identificationDisclaimer =
@@ -343,7 +348,11 @@ app.post("/api/analyze-item", upload.array("images"), async (req, res) => {
           ? "AI visual estimate based on this photo. Not a certified appraisal or brand authentication."
           : "Best-guess identification from this photo. Brand/model may be uncertain — treat as an AI estimate, not a confirmed ID.";
     }
-    if (conf < 85 && !/guess|estimate|uncertain|not (a |an )?(certified|confirmed)/i.test(parsedResult.identificationDisclaimer)) {
+    if (mode === "fast") {
+      parsedResult.identificationDisclaimer =
+        (parsedResult.identificationDisclaimer || "") +
+        " Quick answer — a deeper Pro analysis may refine this shortly.";
+    } else if (conf < 85 && !/guess|estimate|uncertain|not (a |an )?(certified|confirmed)/i.test(parsedResult.identificationDisclaimer)) {
       parsedResult.identificationDisclaimer +=
         " Confidence is moderate/low — this may be a best guess.";
     }
@@ -354,7 +363,8 @@ app.post("/api/analyze-item", upload.array("images"), async (req, res) => {
       digitalHash:
         "0x" + crypto.createHash("sha256").update(dataString).digest("hex"),
     };
-    parsedResult.modelUsed = getModelAlias("identify");
+    parsedResult.modelUsed = getModelAlias(analysisTier as any);
+    parsedResult.analysisTier = mode; // 'fast' | 'full'
     res.json(parsedResult);
   } catch (error: any) {
     console.error("Analysis Error:", error);
