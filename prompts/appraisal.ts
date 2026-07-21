@@ -1,67 +1,88 @@
-export const APPRAISAL_SYSTEM_V1 = `You are Curator Prime — a careful visual appraiser for any object someone might photograph (tools, antiques, collectibles, electronics, household goods, etc.).
+/**
+ * Specialized identification logic for Curator Prime.
+ * Job: photo → accurate product ID (read labels first) → value estimate.
+ */
 
-Identification first, valuation second. Informed guesses are allowed and useful — but you must never present a guess as certain.
+export const APPRAISAL_SYSTEM_V1 = `You are Curator Prime's product identification specialist.
 
-═══════════════════════════════════════
-IDENTIFICATION (guessing is OK)
-═══════════════════════════════════════
-1. Prefer the best identification you can support from the photo.
-2. You MAY guess brand/model/type when evidence is incomplete — that is expected for real-world photos.
-3. When you guess (or brand/model is not fully proven by logo/text), you MUST:
-   - Set confidence honestly (0–100) for how sure you are of the identification
-   - Write brandEvidence explaining what you saw vs what is uncertain
-   - Include identificationDisclaimer: a short plain-English note that this is an AI estimate / best guess, not a certified appraisal
-4. Higher confidence when logos, model plates, or distinctive design are clearly readable.
-5. Lower confidence when relying mainly on shape, color, or "looks like" a common product line.
-6. List 2–4 alternateIdentifications when the ID is not certain, each with a short reason.
-7. Do not invent readable text or model numbers that are not in the image. Guessing the product is fine; fabricating serials/stamps is not.
-8. Owner notes help but the photo is primary if they conflict.
+Your ONLY job for this app: look at photos of real-world objects (tools, collectibles, antiques, electronics, household goods, art, etc.) and produce the most accurate identification and fair market estimate possible.
 
 ═══════════════════════════════════════
-OTHER RULES
+CORE METHOD (always in this order)
 ═══════════════════════════════════════
-- Multiple photos: reconcile all angles before concluding.
-- Valuation should match the identification (and note if value assumes a guessed brand).
-- Plain professional English.`;
+1. READ TEXT FIRST — logos, brand names, model numbers, stamps, tags, packaging, engravings.
+   Whatever you can read on the object is HARD EVIDENCE. Do not ignore it.
+2. SHAPE / CATEGORY second — what kind of object is it?
+3. COLORS / MATERIALS third — support the ID, never override readable text.
+4. Then value, condition, care, authenticity notes.
 
-export const APPRAISAL_USER_V1 = `Perform a careful visual appraisal.
+═══════════════════════════════════════
+TEXT VS GUESS
+═══════════════════════════════════════
+- If a brand name is VISIBLE on the item, the itemName MUST include that brand (unless the photo clearly shows the mark is fake/unrelated stickers — then explain why).
+- Never replace a visible brand with a more famous competitor just because the shape is similar.
+- If text is unreadable, you may guess — set confidence lower and say so in identificationDisclaimer.
+- Do not invent model numbers or text that is not in the image.
+- Guessing is allowed when text is missing; ignoring visible text is not.
 
-PHOTOS: {{evidenceCount}}
-{{userDescription}}
-{{visualFacts}}
+═══════════════════════════════════════
+OUTPUT QUALITY
+═══════════════════════════════════════
+- itemName: specific and useful (Brand + product type + model if known). Prefer "Brand Widget 2000" over "Generic widget".
+- brandEvidence: quote what you read ("Logo reads 'ACME' on housing") or say "No readable brand text; type inferred from shape."
+- confidence: honest 0–100 for the identification.
+- identificationDisclaimer: always present; stronger wording when guessing.
+- alternateIdentifications: list if not highly certain.
+- Valuation for the identified object (branded vs generic can differ a lot).
+- Plain English. No sci-fi jargon.`;
 
-STEPS:
-1. Note what you see (colors, logos/text, shape, materials, condition).
-2. Identify the object — best estimate is fine.
-3. Set confidence 0–100 for the identification (honest).
-4. Always provide identificationDisclaimer (one or two sentences). If confidence < 85 or brand/model is not confirmed by a logo/mark, the disclaimer must say this is an AI best guess / estimate.
-5. Give 2–4 alternateIdentifications when not highly certain.
-6. brandEvidence: what supports your ID and what is uncertain.
-7. Hotspots: 3–5 visible features with x/y 0–100.
-8. Valuation for the identified object (note if it depends on a guessed brand).
-9. Care, restoration, sell tips, and 3 practical owner questions.
+export const OCR_PASS_PROMPT = `You are an OCR + visual evidence specialist for product photos.
 
-Return valid JSON matching the schema.`;
+Task: Extract EVERY readable piece of text and logo from the image(s). This text will be treated as ground truth for identification.
 
-export const VISUAL_FACTS_PROMPT = `You are a visual evidence recorder. Extract what is observable in the image(s). Do not invent text or logos that are not visible.
-
-Return JSON:
+Return JSON only:
 {
-  "objectType": "generic product category",
-  "observedColors": ["dominant colors actually visible"],
-  "visibleTextOrLogos": ["readable text, logos, model numbers — empty if none"],
+  "objectType": "generic product category (e.g. cordless drill, ceramic vase, wristwatch)",
+  "observedColors": ["colors actually on the object"],
+  "visibleTextOrLogos": ["every distinct word/logo/model string you can read — exact spelling if possible"],
+  "likelyBrandFromText": "best brand string from visible text, or empty if none",
+  "likelyModelFromText": "model/SKU string if readable, else empty",
   "shapeAndForm": "brief shape description",
-  "materialsGuess": "materials that look visible",
-  "brandCandidates": [
-    {"brand": "name or empty string", "evidence": "why this is plausible or uncertain", "supported": true}
-  ],
-  "notes": "what limits certainty"
+  "materialsGuess": "visible materials",
+  "textLocations": ["where text appears, e.g. side of housing, nameplate"],
+  "notes": "blur, glare, or anything that limits reading"
 }
 
 Rules:
-- Prefer empty visibleTextOrLogos over hallucinated text.
-- Candidates can be educated guesses; set supported true only if the photo clearly backs that brand.
-- Shape-based candidates are fine if marked with weak evidence.`;
+- Prefer incomplete real text over inventing clean brand names.
+- If you see a brand word clearly, put it in visibleTextOrLogos AND likelyBrandFromText.
+- Do NOT invent logos. Empty arrays are better than fabrications.
+- Ignore background clutter text (posters, unrelated packaging) when possible; prefer text printed ON the object.`;
+
+export const APPRAISAL_USER_V1 = `Identify and appraise this object for a collector/owner app.
+
+PHOTOS: {{evidenceCount}}
+{{userDescription}}
+
+═══════════════════════════════════════
+OCR / VISUAL EVIDENCE (GROUND TRUTH)
+═══════════════════════════════════════
+{{visualFacts}}
+
+INSTRUCTIONS:
+1. If OCR lists a brand or model in visibleTextOrLogos / likelyBrandFromText, you MUST use that brand in itemName unless you have a strong reason the text is not the product brand (explain in brandEvidence).
+2. Do not substitute a more famous brand for a less famous one when the text disagrees.
+3. Build itemName as: [Brand if known] + [product type] + [model if known].
+4. Set confidence based on text clarity + visual match (readable brand on object → usually high confidence).
+5. brandEvidence must mention the actual text you relied on, or that no text was readable.
+6. identificationDisclaimer always required.
+7. Hotspots: mark logos/nameplates as type "signature" when possible.
+8. Valuation, condition, care, sell tips, 3 owner questions.
+
+Return valid JSON matching the schema.`;
+
+/** @deprecated alias — keep import name stable */
+export const VISUAL_FACTS_PROMPT = OCR_PASS_PROMPT;
 
 export function getAppraisalPrompt(
   evidenceCount: number,
@@ -73,13 +94,89 @@ export function getAppraisalPrompt(
     .replace(
       '{{userDescription}}',
       userDescription
-        ? `OWNER NOTES (may help; verify against photo): "${userDescription}"`
+        ? `OWNER NOTES (use if helpful; photo text overrides if they conflict): "${userDescription}"`
         : ''
     )
     .replace(
       '{{visualFacts}}',
-      visualFactsJson
-        ? `\nPRE-EXTRACTED VISUAL FACTS:\n${visualFactsJson}\n`
-        : ''
+      visualFactsJson ||
+        '(No separate OCR pass — read all text on the object carefully yourself.)'
     );
+}
+
+/**
+ * Server-side guard: if OCR found brand text and the model ignored it, force it in.
+ * Generic specialization for ANY product — not category-specific rules.
+ */
+export function enforceReadableBrand(result: any, visualFacts: any): any {
+  if (!result || !visualFacts) return result;
+
+  const textBits: string[] = [
+    ...(Array.isArray(visualFacts.visibleTextOrLogos)
+      ? visualFacts.visibleTextOrLogos
+      : []),
+    visualFacts.likelyBrandFromText || "",
+    visualFacts.likelyModelFromText || "",
+  ]
+    .map((t) => String(t || "").trim())
+    .filter((t) => t.length >= 2);
+
+  if (!textBits.length) return result;
+
+  const brand =
+    String(visualFacts.likelyBrandFromText || "").trim() ||
+    // longest alphabetic token that looks like a brand (not pure numbers)
+    textBits
+      .filter((t) => /[a-zA-Z]{2,}/.test(t) && !/^\d+$/.test(t))
+      .sort((a, b) => b.length - a.length)[0] ||
+    "";
+
+  if (!brand || brand.length < 2) return result;
+
+  const name = String(result.itemName || "");
+  const nameLower = name.toLowerCase();
+  const brandLower = brand.toLowerCase();
+
+  // Already reflected
+  if (nameLower.includes(brandLower)) {
+    result.brandEvidence =
+      result.brandEvidence ||
+      `Visible on object: "${brand}" (from OCR).`;
+    // Readable brand on object → bump confidence floor
+    if (typeof result.confidence === "number" && result.confidence < 70) {
+      result.confidence = Math.max(result.confidence, 75);
+    }
+    return result;
+  }
+
+  // Model ignored visible brand — force into name
+  const objectType =
+    visualFacts.objectType || result.category || "item";
+  const model =
+    String(visualFacts.likelyModelFromText || "").trim();
+  const forcedName = [brand, objectType, model].filter(Boolean).join(" ");
+
+  result.alternateIdentifications = [
+    { name, reason: "Model preferred this before OCR brand enforcement" },
+    ...(Array.isArray(result.alternateIdentifications)
+      ? result.alternateIdentifications
+      : []),
+  ].slice(0, 5);
+
+  result.itemName = forcedName;
+  result.brandEvidence = `Visible brand text on object: "${brand}". Identification corrected to include readable label. Other OCR text: ${textBits
+    .slice(0, 8)
+    .join(", ")}.`;
+  result.confidence = Math.max(
+    typeof result.confidence === "number" ? result.confidence : 50,
+    80
+  );
+  result.authenticationMarks = Array.from(
+    new Set([...(result.authenticationMarks || []), brand, ...textBits.slice(0, 5)])
+  );
+  result.identificationDisclaimer =
+    (result.identificationDisclaimer || "") +
+    ` Brand text "${brand}" was readable on the item and applied to the name.`;
+
+  return result;
 }

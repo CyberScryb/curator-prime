@@ -7,7 +7,8 @@ import crypto from "crypto";
 import {
   APPRAISAL_SYSTEM_V1,
   getAppraisalPrompt,
-  VISUAL_FACTS_PROMPT,
+  OCR_PASS_PROMPT,
+  enforceReadableBrand,
 } from "./appraisal.js";
 import { getLiveAnalysisPrompt } from "./liveAnalysis.js";
 
@@ -115,9 +116,10 @@ app.get("/api/health", (_req, res) => {
   res.json({ status: "ok" });
 });
 
-// Analyze Item (Multipart)
-// mode=fast  → single Flash pass (quick answer)
-// mode=full  → visual facts + Pro (default deeper analysis)
+// Analyze Item — specialized pipeline:
+// 1) OCR / label read (always — brand text is ground truth)
+// 2) Full appraisal constrained by OCR (Flash or Pro by mode)
+// 3) Server enforcement if model ignored readable brand text
 app.post("/api/analyze-item", upload.array("images"), async (req, res) => {
   try {
     const files = (req.files as Express.Multer.File[]) || [];
@@ -130,24 +132,24 @@ app.post("/api/analyze-item", upload.array("images"), async (req, res) => {
       inlineData: { data: f.buffer.toString("base64"), mimeType: f.mimetype },
     }));
 
-    // ── Optional Pass 1: visual facts (skip in fast mode for speed) ──
+    // ── Pass 1: OCR / labels (ALWAYS — even in fast mode; this is the specialty) ──
+    // Fast uses Flash OCR; full uses identify/Pro chain for harder-to-read text
     let visualFacts: any = null;
-    if (mode === "full") {
-      try {
-        const factsRes = await generateWithFallback(ai, "flash", {
-          contents: {
-            parts: [...imageParts, { text: VISUAL_FACTS_PROMPT }],
-          },
-          config: {
-            responseMimeType: "application/json",
-            temperature: 0.2,
-          },
-        });
-        const factsText = (factsRes.text || "").replace(/```json|```/g, "").trim();
-        visualFacts = JSON.parse(factsText);
-      } catch (factsErr: any) {
-        console.warn("Visual facts pass failed (continuing):", factsErr?.message);
-      }
+    try {
+      const ocrTier = mode === "fast" ? "flash" : "identify";
+      const factsRes = await generateWithFallback(ai, ocrTier as any, {
+        contents: {
+          parts: [...imageParts, { text: OCR_PASS_PROMPT }],
+        },
+        config: {
+          responseMimeType: "application/json",
+          temperature: 0.1,
+        },
+      });
+      const factsText = (factsRes.text || "").replace(/```json|```/g, "").trim();
+      visualFacts = JSON.parse(factsText);
+    } catch (factsErr: any) {
+      console.warn("OCR pass failed (continuing):", factsErr?.message);
     }
 
     const prompt = getAppraisalPrompt(
@@ -156,7 +158,7 @@ app.post("/api/analyze-item", upload.array("images"), async (req, res) => {
       visualFacts ? JSON.stringify(visualFacts, null, 2) : undefined
     );
 
-    // Fast = Flash model; Full = Pro/identify chain
+    // Fast = Flash appraisal; Full = Pro appraisal (both still OCR-constrained)
     const analysisTier = mode === "fast" ? "flash" : "identify";
 
     const requestConfig = {
@@ -164,7 +166,7 @@ app.post("/api/analyze-item", upload.array("images"), async (req, res) => {
       config: {
         systemInstruction: APPRAISAL_SYSTEM_V1,
         responseMimeType: "application/json",
-        temperature: mode === "fast" ? 0.4 : 0.35,
+        temperature: mode === "fast" ? 0.25 : 0.15,
         responseSchema: {
           type: Type.OBJECT,
           properties: {
@@ -316,17 +318,19 @@ app.post("/api/analyze-item", upload.array("images"), async (req, res) => {
       },
     };
 
-    // ── Main appraisal: Flash (fast) or Pro (full) ──
+    // ── Pass 2: appraisal constrained by OCR evidence ──
     const response = await generateWithFallback(ai, analysisTier as any, requestConfig);
 
     let cleanText = (response.text || "").replace(/```json|```/g, "").trim();
-    const parsedResult = sanitizeResult(JSON.parse(cleanText));
+    let parsedResult = sanitizeResult(JSON.parse(cleanText));
 
     if (visualFacts) {
       parsedResult.visualFacts = visualFacts;
       if (!parsedResult.observedColors?.length && visualFacts.observedColors) {
         parsedResult.observedColors = visualFacts.observedColors;
       }
+      // Specialty: never drop a brand that was readable on the object
+      parsedResult = enforceReadableBrand(parsedResult, visualFacts);
     }
 
     if (typeof parsedResult.confidence === "number") {
@@ -364,7 +368,8 @@ app.post("/api/analyze-item", upload.array("images"), async (req, res) => {
         "0x" + crypto.createHash("sha256").update(dataString).digest("hex"),
     };
     parsedResult.modelUsed = getModelAlias(analysisTier as any);
-    parsedResult.analysisTier = mode; // 'fast' | 'full'
+    parsedResult.analysisTier = mode;
+    parsedResult.pipeline = "ocr-first-v2";
     res.json(parsedResult);
   } catch (error: any) {
     console.error("Analysis Error:", error);
