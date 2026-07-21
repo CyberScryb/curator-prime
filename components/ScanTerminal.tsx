@@ -7,7 +7,7 @@ import { soundManager } from '../services/soundService';
 import { toast } from './Toast';
 
 interface ScannerProps {
-  onSave: (result: AppraisalResult, imageData: string) => void;
+  onSave: (result: AppraisalResult, imageData: string) => void | Promise<void>;
 }
 
 export interface ScannerRef {
@@ -270,16 +270,17 @@ export const Scanner = forwardRef<ScannerRef, ScannerProps>(({ onSave }, ref) =>
       setIsAnalyzing(true);
       try {
           const result = await analyzeItem(images, userDescription);
-          onSave(result, images[0]);
-          setIsAnalyzing(false);
+          // Await vault handoff so spinner covers compress/save and errors surface cleanly
+          await onSave(result, images[0]);
           setCapturedImages([]);
           setUserDescription("");
           setShowForm(false);
       } catch (e) {
           triggerHaptic('alert');
           toast.error("Analysis Error: " + (e as Error).message);
-          setIsAnalyzing(false);
           setCapturedImages([]);
+      } finally {
+          setIsAnalyzing(false);
       }
   };
 

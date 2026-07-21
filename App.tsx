@@ -15,7 +15,7 @@ import { ToastContainer, ToastMessage, toast } from './components/Toast';
 import { useAuth } from './contexts/AuthContext';
 import { db, handleFirestoreError } from './services/firebase';
 import { collection as fsCollection, query, where, onSnapshot, doc, setDoc, deleteDoc, updateDoc } from 'firebase/firestore';
-import { compressImage } from './lib/imageUtils';
+import { buildVaultItem, stripUndefined, vaultErrorMessage, normalizeAppraisal } from './lib/vaultUtils';
 
 const App: React.FC = () => {
   const { user, loading: authLoading } = useAuth();
@@ -91,73 +91,115 @@ const App: React.FC = () => {
   const removeToast = (id: string) => setToasts(prev => prev.filter(t => t.id !== id));
 
   const saveToCollection = async (result: AppraisalResult, primaryImage: string) => {
-    if (!user) return;
+    if (!user) {
+      toast.error("Sign in required to vault items");
+      return;
+    }
 
+    const normalized = normalizeAppraisal(result);
     const existingIndex = collection.findIndex(
-        item => item.itemName === result.itemName && 
-                item.era === result.era && 
-                item.classification === result.classification
+        item => item.itemName === normalized.itemName &&
+                item.era === normalized.era &&
+                item.classification === normalized.classification
     );
 
+    // Always surface appraisal results first — vault write is secondary.
+    // Previously a failed Firestore write meant the user never saw the scan.
     try {
         if (existingIndex > -1) {
             const existingItem = collection[existingIndex];
-            const newImagesRaw = result.images || [primaryImage];
+            const prepared = await buildVaultItem(normalized, primaryImage, user.uid, existingItem.id);
             const existingImages = existingItem.images || [existingItem.imageUrl];
-            
-            // Compress new images before merging
-            const compressedNewImages = await Promise.all(newImagesRaw.map(img => compressImage(img, 600, 0.4)));
-            const combinedImages = Array.from(new Set([...existingImages, ...compressedNewImages]));
+            const combinedImages = Array.from(
+              new Set([...existingImages, ...(prepared.images || [prepared.imageUrl])].filter(Boolean))
+            ).slice(0, 8);
 
-            let newTier = existingItem.provenance.trustTier;
+            let newTier = existingItem.provenance?.trustTier || 'Level 1 (Snapshot)';
             if (combinedImages.length >= 3) newTier = 'Level 3 (Verified)';
             else if (combinedImages.length === 2) newTier = 'Level 2 (Visual)';
 
-            const itemRef = doc(db, 'items', existingItem.id);
-            await updateDoc(itemRef, {
-                valuation: result.valuation, 
-                forecast: result.forecast,
-                condition: result.condition,
-                conditionScore: result.conditionScore,
-                historicalContext: result.historicalContext.length > existingItem.historicalContext.length ? result.historicalContext : existingItem.historicalContext,
+            const updatePayload = stripUndefined({
+                valuation: prepared.valuation,
+                forecast: prepared.forecast,
+                condition: prepared.condition,
+                conditionScore: prepared.conditionScore,
+                historicalContext:
+                  (prepared.historicalContext?.length || 0) > (existingItem.historicalContext?.length || 0)
+                    ? prepared.historicalContext
+                    : existingItem.historicalContext,
                 images: combinedImages,
                 imageUrl: combinedImages[0],
                 provenance: {
                     ...existingItem.provenance,
-                    trustTier: newTier as any
+                    ...prepared.provenance,
+                    trustTier: newTier as CollectionItem['provenance']['trustTier'],
                 },
-                dateScanned: new Date().toISOString()
-            } as any).catch(e => handleFirestoreError(e, 'update', `items/${existingItem.id}`));
+                dateScanned: new Date().toISOString(),
+                rarityScore: prepared.rarityScore,
+                rarityDescription: prepared.rarityDescription,
+                materials: prepared.materials,
+                careInstructions: prepared.careInstructions,
+                visualHotspots: prepared.visualHotspots,
+                keyFeatures: prepared.keyFeatures,
+                authenticationMarks: prepared.authenticationMarks,
+                comparableSales: prepared.comparableSales,
+                sellingProfile: prepared.sellingProfile,
+                restoration: prepared.restoration,
+                forensicInsight: prepared.forensicInsight,
+                authenticityAssessment: prepared.authenticityAssessment,
+                authenticityScore: prepared.authenticityScore,
+                insightfulPrompts: prepared.insightfulPrompts,
+                confidence: prepared.confidence,
+            });
+
+            const mergedView: CollectionItem = {
+              ...existingItem,
+              ...prepared,
+              id: existingItem.id,
+              images: combinedImages,
+              imageUrl: combinedImages[0],
+              provenance: updatePayload.provenance as CollectionItem['provenance'],
+            };
+            setSelectedItem(mergedView);
+            setActiveTab('COLLECTION');
+
+            const itemRef = doc(db, 'items', existingItem.id);
+            await updateDoc(itemRef, updatePayload as any).catch(e =>
+              handleFirestoreError(e, 'update', `items/${existingItem.id}`)
+            );
 
             soundManager.playLock('high');
             toast.success("Asset Merged & Updated in Cloud");
-
         } else {
-            const itemId = crypto.randomUUID();
-            
-            // Compress images for new item
-            const rawImages = result.images || [primaryImage];
-            const compressedImages = await Promise.all(rawImages.map(img => compressImage(img, 600, 0.4)));
+            const newItem = await buildVaultItem(normalized, primaryImage, user.uid);
 
-            const newItem: CollectionItem = {
-                ...result,
-                id: itemId,
-                userId: user.uid,
-                dateScanned: new Date().toISOString(),
-                imageUrl: compressedImages[0],
-                images: compressedImages
-            };
-            
-            await setDoc(doc(db, 'items', itemId), newItem).catch(e => handleFirestoreError(e, 'create', `items/${itemId}`));
-            
+            // Show results immediately so a vault failure still leaves the appraisal on screen
+            setSelectedItem(newItem);
+            setActiveTab('COLLECTION');
+
+            if (!user.emailVerified) {
+              toast.info("Appraisal ready. Verify email to permanently vault this item.");
+              return;
+            }
+
+            await setDoc(doc(db, 'items', newItem.id), newItem).catch(e =>
+              handleFirestoreError(e, 'create', `items/${newItem.id}`)
+            );
+
             soundManager.playLock('standard');
             toast.success("New Asset Securely Vaulted to Cloud");
         }
-
-        setActiveTab('COLLECTION');
     } catch (error) {
         console.error("Save error:", error);
-        toast.error("Vault injection failed: See console");
+        // Ensure the appraisal is on screen even when vault write fails mid-flight
+        try {
+          const fallback = await buildVaultItem(normalized, primaryImage, user.uid);
+          setSelectedItem(fallback);
+          setActiveTab('COLLECTION');
+        } catch (displayErr) {
+          console.error("Could not display scan result:", displayErr);
+        }
+        toast.error(vaultErrorMessage(error, user.emailVerified));
     }
   };
 
@@ -169,36 +211,35 @@ const App: React.FC = () => {
 
       try {
           const itemRef = doc(db, 'items', selectedItem.id);
-          
-          // Ensure mandatory fields for rules are present even if result might be partial
-          const updatePayload = {
-              ...result,
+          const prepared = await buildVaultItem(
+            result,
+            selectedItem.imageUrl,
+            user.uid,
+            selectedItem.id
+          );
+
+          const updatePayload = stripUndefined({
+              ...prepared,
               id: selectedItem.id,
               userId: user.uid,
-              updatedAt: new Date().toISOString()
-          };
+              updatedAt: new Date().toISOString(),
+          });
 
-          // Compress images only if they were newly added/changed
-          // (Simple check: if they are data URLs)
-          if (updatePayload.images) {
-              updatePayload.images = await Promise.all(
-                  updatePayload.images.map(img => 
-                      img.startsWith('data:') ? compressImage(img, 600, 0.4) : img
-                  )
-              );
-          }
+          // Only send fields the security rules allow on update
+          const { id: _id, userId: _uid, ...writable } = updatePayload as CollectionItem & { updatedAt?: string };
+          void _id; void _uid;
 
-          await updateDoc(itemRef, updatePayload as any).catch(e => handleFirestoreError(e, 'update', `items/${selectedItem.id}`));
+          await updateDoc(itemRef, {
+            ...writable,
+            id: selectedItem.id,
+            userId: user.uid,
+          } as any).catch(e => handleFirestoreError(e, 'update', `items/${selectedItem.id}`));
           
           toast.success("Vault Sync Complete");
-          setSelectedItem(prev => prev ? { ...prev, ...result, images: updatePayload.images } : null);
+          setSelectedItem(prev => prev ? { ...prev, ...prepared } : null);
       } catch (error: any) {
           console.error("Update error detail:", error);
-          if (error.code === 'permission-denied') {
-              toast.error("Access Revoked: Security violation detected");
-          } else {
-              toast.error("Transmission Error: " + (error.message || "Unknown Failure"));
-          }
+          toast.error(vaultErrorMessage(error, user.emailVerified));
       }
   };
 
