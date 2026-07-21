@@ -15,6 +15,24 @@ const dataURLToBlob = (dataURL: string) => {
     return new Blob([u8arr], { type: mime });
 };
 
+/** Parse API response as JSON; surface HTML/404 bodies as readable errors. */
+async function readApiJson<T = any>(response: Response): Promise<T> {
+  const text = await response.text();
+  const trimmed = (text || '').trim();
+  if (!trimmed) {
+    throw new Error(`Empty response from analysis API (${response.status})`);
+  }
+  try {
+    return JSON.parse(trimmed) as T;
+  } catch {
+    const preview = trimmed.slice(0, 120).replace(/\s+/g, ' ');
+    if (response.status === 404 || /NOT_FOUND|<!DOCTYPE|<html/i.test(trimmed)) {
+      throw new Error('Analysis API is offline (404). Redeploy with serverless /api routes.');
+    }
+    throw new Error(`Analysis API returned non-JSON (${response.status}): ${preview}`);
+  }
+}
+
 // FULL APPRAISAL (Manual Mode)
 export const analyzeItem = async (imageBuffers: string[], userDescription?: string): Promise<AppraisalResult> => {
   const formData = new FormData();
@@ -32,12 +50,12 @@ export const analyzeItem = async (imageBuffers: string[], userDescription?: stri
     body: formData,
   });
 
+  const payload = await readApiJson<AppraisalResult & { error?: string }>(response);
   if (!response.ok) {
-    const errorData = await response.json();
-    throw new Error(errorData.error || "Analysis failed");
+    throw new Error(payload.error || `Analysis failed (${response.status})`);
   }
 
-  const result = await response.json() as AppraisalResult;
+  const result = payload as AppraisalResult;
   
   const generatedHash = await generateProvenanceHash(result, imageBuffers[0]);
 
