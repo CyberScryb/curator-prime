@@ -9,6 +9,7 @@ import {
   OCR_PASS_PROMPT,
   enforceReadableBrand,
   getAppraisalPrompt,
+  sanitizeInsightfulPrompts,
 } from "./appraisal.js";
 import { getLiveAnalysisPrompt } from "./liveAnalysis.js";
 
@@ -387,6 +388,11 @@ app.post("/api/analyze-item", upload.array("images"), async (req, res) => {
       }
     }
 
+    // Owner-facing chips only — drop hands-on / buyer-inspection questions
+    parsedResult.insightfulPrompts = sanitizeInsightfulPrompts(
+      parsedResult.insightfulPrompts
+    );
+
     if (typeof parsedResult.confidence === "number") {
       if (parsedResult.confidence > 0 && parsedResult.confidence <= 1) {
         parsedResult.confidence = Math.round(parsedResult.confidence * 100);
@@ -463,7 +469,7 @@ app.post("/api/ask", async (req, res) => {
   try {
     const { itemContext, question } = req.body;
     const ai = getAI();
-    const systemContext = `You are Curator Prime — a practical antiques & collectibles expert helping a non-expert owner.
+    const systemContext = `You are Curator Prime — a practical expert helping a non-expert OWNER who already photographed this item (they own it; they are not shopping).
 Item: ${itemContext?.itemName} (${itemContext?.era}, ${itemContext?.origin}).
 Key data: ${JSON.stringify({
   classification: itemContext?.classification,
@@ -473,8 +479,14 @@ Key data: ${JSON.stringify({
   authenticityAssessment: itemContext?.authenticityAssessment,
   marks: itemContext?.authenticationMarks,
   care: itemContext?.careInstructions,
+  brandEvidence: itemContext?.brandEvidence,
+  category: itemContext?.category,
 })}.
-Rules: Answer clearly in plain English. Be specific and actionable. Short paragraphs or bullets. No sci-fi jargon. If uncertain, say so.`;
+Rules:
+- Answer clearly in plain English. Be specific and actionable. Short paragraphs or bullets. No sci-fi jargon.
+- Base answers on the ID, visible details, and general knowledge of this product type.
+- If something cannot be known from a photo (battery health, vibrations, noise, whether it powers on), say so briefly and offer what you CAN help with instead.
+- If the user asks you to invent suggested questions, only return owner questions you could answer (value, model, care, sell, marks, rarity) — never buyer test questions.`;
     const result = await generateWithFallback(ai, "flash", {
       contents: { parts: [{ text: systemContext + "\n\nUser Question: " + question }] },
     });

@@ -109,6 +109,14 @@ export const generateRestorationPreview = async (
   }
 };
 
+/** Drop questions that need physical testing or buyer-inspection framing. */
+function isAnswerableOwnerQuestion(q: string): boolean {
+  const s = q.toLowerCase();
+  const banned =
+    /\b(batter(y|ies)|vibrat|noise|sound|smell|odor|feel|grip|torque|motor strong|still (work|run)|hold(s)? a charge|charge last|unusual|test it|plug it in|turn it on|does it work|how does it (run|feel)|inspect before buy|should i buy)\b/i;
+  return s.length > 8 && s.length < 120 && !banned.test(s);
+}
+
 export const generateDynamicPrompts = async (item: AppraisalResult): Promise<string[]> => {
   try {
     const response = await fetch("/api/ask", {
@@ -116,21 +124,38 @@ export const generateDynamicPrompts = async (item: AppraisalResult): Promise<str
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         itemContext: item,
-        question: `Return ONLY a JSON array of exactly 3 short practical questions a collector would ask about this ${item.itemName}. Example: ["Is this authentic?","What is it worth?","How do I care for it?"]`,
+        question: `Return ONLY a JSON array of exactly 3 short questions (under 12 words each) that the OWNER of this ${item.itemName} would ask Curator after scanning a photo they already own.
+
+Rules:
+- Owner already has the item — not shopping / not pre-purchase inspection.
+- Only questions Curator can answer from the photo, identification, and general product knowledge.
+- Good topics: fair value/sell price, model or variant, what marks/logos mean, care & storage for these materials, where to sell, rarity, common fakes for this type, typical age/era, matching accessories.
+- Never ask about battery health, vibrations, noise, smell, "does it work", how it feels, or anything needing hands-on testing the photo cannot show.
+Example: ["What is a fair sell price?","How should I clean this?","What model is this likely?"]`,
       }),
     });
     const data = await readApiJson<{ text?: string }>(response);
     const clean = (data.text || "").replace(/```json|```/g, "").trim();
     const parsed = JSON.parse(clean);
-    const arr = Array.isArray(parsed) ? parsed : parsed.prompts || [];
-    if (arr.length >= 3) return arr.slice(0, 3).map(String);
+    const arr = (Array.isArray(parsed) ? parsed : parsed.prompts || [])
+      .map(String)
+      .filter(isAnswerableOwnerQuestion);
+    if (arr.length >= 3) return arr.slice(0, 3);
+    if (arr.length > 0) {
+      return [
+        ...arr,
+        "What is a fair price if I sell?",
+        "How do I care for this?",
+        "What should I know about this model?",
+      ].filter(isAnswerableOwnerQuestion).slice(0, 3);
+    }
   } catch {
     /* fall through */
   }
   return [
-    "Is this authentic, and what should I check?",
-    "How should I price this if I sell?",
-    "How do I clean and store this safely?",
+    "What is a fair price if I sell?",
+    "How do I care for this item?",
+    "What model or variant is this?",
   ];
 };
 
