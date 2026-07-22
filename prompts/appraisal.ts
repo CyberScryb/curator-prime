@@ -30,7 +30,7 @@ OUTPUT
 - identificationDisclaimer: always present
 - brandEvidence: quote visible logo/text when present, or state none readable
 - valuation for the identified object
-- insightfulPrompts: exactly 3 short questions someone would ask about this item that YOU can actually answer from the photo, ID, and product knowledge (not hands-on tests). See user prompt rules.`;
+- insightfulPrompts: exactly 3 short, varied questions someone would ask that YOU can answer from the photo, product ID, and online/general knowledge (price, models, variants, history, market, etc. — not hands-on tests). See user prompt rules.`;
 
 export const OCR_PASS_PROMPT = `Read the product photo carefully. Extract ONLY text and logos you can actually see.
 
@@ -70,12 +70,22 @@ Produce a complete JSON appraisal.
 - confidence 0–100, identificationDisclaimer always.
 - Hotspots 3–5 if possible (mark logos as type "signature" when you see them).
 - Valuation, care, authenticity, sell tips.
-- insightfulPrompts: exactly 3 short questions (under ~12 words each).
-  Audience: someone looking at this scanned item (owner or buyer is fine).
-  CRITICAL: every question must be answerable from the photo, identification, and general product knowledge — never something that needs hands-on testing, power-on, or senses the camera cannot capture.
-  Good topics: value / fair price, model or variant, what marks/logos mean, authenticity red flags visible on this type, care & materials, rarity, common fakes, era/age, where people sell this, accessories that usually come with it, how it compares to similar models.
-  Bad topics (never use): battery health/charge, vibrations, noise, smell, "does it work", motor strength, grip feel, torque, anything requiring plugging it in or running it.
-  Good examples: "What is a fair market price?", "How do I spot fakes of this model?", "What do these marks mean?", "How should this be cleaned?"
+- insightfulPrompts: exactly 3 short questions (under ~14 words each). Make them DIVERSE — pick different angles for this specific item, not three generic care questions.
+  Audience: anyone curious about the item (owner or buyer is fine).
+  ALLOWED — anything answerable from the photo, identification, and online/product knowledge, including:
+    * price / fair market value / what similar ones sell for
+    * models, series, generations, year range, regional variants
+    * brand/maker history and why this piece matters
+    * how this compares to other variants or competitors
+    * marks, logos, serial styles and what they mean
+    * authenticity / common fakes or repros for this type
+    * rarity, collectability, market demand
+    * materials, era, original accessories/kit
+    * care, storage, selling venues (when relevant)
+  FORBIDDEN — only things that need hands-on testing the camera cannot show:
+    battery health, vibrations, noise, smell, "does it power on", motor strength, grip feel, torque.
+  Prefer questions specific to THIS itemName/brand/category.
+  Good examples: "What is a fair market price?", "Which model or variant is this?", "What's the history of this maker?", "How does this compare to later models?", "What years was this made?"
   Bad examples: "Does the battery still hold a charge?", "Any unusual vibrations?", "How does it feel when running?"`;
 
 /** @deprecated name kept for imports */
@@ -114,8 +124,8 @@ const OWNER_PROMPT_BANNED =
 
 const DEFAULT_ANSWERABLE_PROMPTS = [
   "What is a fair market price?",
-  "How do I care for this item?",
-  "What model or variant is this?",
+  "Which model or variant is this?",
+  "What's the history behind this item?",
 ];
 
 /** Drop questions Curator cannot answer from a photo (hands-on / sensory tests). */

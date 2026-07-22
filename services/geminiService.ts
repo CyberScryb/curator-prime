@@ -124,14 +124,22 @@ export const generateDynamicPrompts = async (item: AppraisalResult): Promise<str
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         itemContext: item,
-        question: `Return ONLY a JSON array of exactly 3 short questions (under 12 words each) someone would ask about this ${item.itemName} after seeing a scan/photo.
+        question: `Return ONLY a JSON array of exactly 3 short questions (under 14 words each) someone would ask about this ${item.itemName} after a photo scan.
 
-Rules:
-- Owner or buyer framing is fine.
-- ONLY questions Curator can answer from the photo, identification, and general product knowledge.
-- Good: fair price/value, model/variant, what marks mean, authenticity red flags for this type, care, rarity, common fakes, era, where people sell it, how it compares to similar models.
-- NEVER: battery health, vibrations, noise, smell, "does it work", motor strength, how it feels — anything needing hands-on testing the camera cannot show.
-Example: ["What is a fair market price?","How do I spot fakes?","What do these marks mean?"]`,
+Make them DIVERSE and specific to this item — cover different angles from this menu (pick 3 different ones):
+- fair market price / what similar ones sell for
+- model, series, generation, year range, or regional variants
+- brand/maker history or significance
+- how this compares to other models/variants
+- marks/logos and what they mean
+- authenticity / common fakes
+- rarity or collectability
+- original accessories or kit
+- care or best place to sell (only if useful for this item)
+
+You may use anything answerable from the photo, the ID, or online/product knowledge.
+NEVER: battery health, vibrations, noise, smell, "does it work", motor strength, how it feels — hands-on tests only.
+Example: ["What is a fair market price?","Which model or variant is this?","What's the history of this maker?"]`,
       }),
     });
     const data = await readApiJson<{ text?: string }>(response);
@@ -145,8 +153,8 @@ Example: ["What is a fair market price?","How do I spot fakes?","What do these m
       return [
         ...arr,
         "What is a fair market price?",
-        "How do I care for this?",
-        "What model is this likely?",
+        "Which model or variant is this?",
+        "What's the history behind this?",
       ]
         .filter(isAnswerableFromPhoto)
         .slice(0, 3);
@@ -156,8 +164,8 @@ Example: ["What is a fair market price?","How do I spot fakes?","What do these m
   }
   return [
     "What is a fair market price?",
-    "How do I care for this item?",
-    "What model or variant is this?",
+    "Which model or variant is this?",
+    "What's the history behind this item?",
   ];
 };
 

@@ -464,14 +464,14 @@ app.post("/api/analyze-live", upload.single("image"), async (req, res) => {
   }
 });
 
-// Chat / Ask Curator
+// Chat / Ask Curator (photo ID + online knowledge; Google Search when useful)
 app.post("/api/ask", async (req, res) => {
   try {
     const { itemContext, question } = req.body;
     const ai = getAI();
-    const systemContext = `You are Curator Prime — a practical expert helping someone who scanned a photo of an item (owner or buyer is fine).
+    const systemContext = `You are Curator Prime — a practical expert for items identified from a photo.
 Item: ${itemContext?.itemName} (${itemContext?.era}, ${itemContext?.origin}).
-Key data: ${JSON.stringify({
+Key data from the scan: ${JSON.stringify({
   classification: itemContext?.classification,
   condition: itemContext?.condition,
   materials: itemContext?.materials,
@@ -481,15 +481,40 @@ Key data: ${JSON.stringify({
   care: itemContext?.careInstructions,
   brandEvidence: itemContext?.brandEvidence,
   category: itemContext?.category,
+  historicalContext: itemContext?.historicalContext,
 })}.
+
+You CAN and SHOULD cover:
+- fair market price / comps, models, series, variants, year ranges
+- brand/maker history, significance, market demand, rarity
+- marks/logos, authenticity cues, common fakes, comparisons to similar models
+- care, selling venues, original accessories — anything answerable from the photo, ID, or online knowledge
+
+You CANNOT know from a photo alone: battery health, vibrations, noise, smell, whether it powers on, motor strength, how it feels. If asked, say so briefly and pivot to what you can cover.
+
 Rules:
-- Answer clearly in plain English. Be specific and actionable. Short paragraphs or bullets. No sci-fi jargon.
-- Base answers on the ID, visible details, and general knowledge of this product type.
-- If something cannot be known from a photo (battery health, vibrations, noise, whether it powers on), say so briefly and offer what you CAN help with instead.
-- If asked to invent suggested questions: only questions answerable from photo/ID/knowledge (value, model, marks, authenticity cues, care, rarity, comps) — never hands-on test questions the camera cannot answer.`;
-    const result = await generateWithFallback(ai, "flash", {
-      contents: { parts: [{ text: systemContext + "\n\nUser Question: " + question }] },
-    });
+- Plain English, specific and useful. Short paragraphs or bullets. No sci-fi jargon.
+- Use web search when the question is about current prices, comps, model history, or product facts.
+- If inventing suggested questions: diverse angles (price, models/variants, history, market, authenticity) — never hands-on test questions.`;
+
+    // Prefer search-enabled answer for richer price/history/model facts
+    let result: any;
+    try {
+      result = await generateWithFallback(ai, "flash", {
+        contents: {
+          parts: [{ text: systemContext + "\n\nUser Question: " + question }],
+        },
+        config: {
+          tools: [{ googleSearch: {} }],
+        },
+      });
+    } catch {
+      result = await generateWithFallback(ai, "flash", {
+        contents: {
+          parts: [{ text: systemContext + "\n\nUser Question: " + question }],
+        },
+      });
+    }
     res.json({ text: result.text });
   } catch (error: any) {
     res.status(500).json({ error: error.message || String(error) });
