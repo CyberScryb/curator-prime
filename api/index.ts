@@ -388,7 +388,7 @@ app.post("/api/analyze-item", upload.array("images"), async (req, res) => {
       }
     }
 
-    // Owner-facing chips only — drop hands-on / buyer-inspection questions
+    // Only chips Curator can answer from photo/ID — drop hands-on test questions
     parsedResult.insightfulPrompts = sanitizeInsightfulPrompts(
       parsedResult.insightfulPrompts
     );
@@ -469,7 +469,7 @@ app.post("/api/ask", async (req, res) => {
   try {
     const { itemContext, question } = req.body;
     const ai = getAI();
-    const systemContext = `You are Curator Prime — a practical expert helping a non-expert OWNER who already photographed this item (they own it; they are not shopping).
+    const systemContext = `You are Curator Prime — a practical expert helping someone who scanned a photo of an item (owner or buyer is fine).
 Item: ${itemContext?.itemName} (${itemContext?.era}, ${itemContext?.origin}).
 Key data: ${JSON.stringify({
   classification: itemContext?.classification,
@@ -486,7 +486,7 @@ Rules:
 - Answer clearly in plain English. Be specific and actionable. Short paragraphs or bullets. No sci-fi jargon.
 - Base answers on the ID, visible details, and general knowledge of this product type.
 - If something cannot be known from a photo (battery health, vibrations, noise, whether it powers on), say so briefly and offer what you CAN help with instead.
-- If the user asks you to invent suggested questions, only return owner questions you could answer (value, model, care, sell, marks, rarity) — never buyer test questions.`;
+- If asked to invent suggested questions: only questions answerable from photo/ID/knowledge (value, model, marks, authenticity cues, care, rarity, comps) — never hands-on test questions the camera cannot answer.`;
     const result = await generateWithFallback(ai, "flash", {
       contents: { parts: [{ text: systemContext + "\n\nUser Question: " + question }] },
     });

@@ -30,7 +30,7 @@ OUTPUT
 - identificationDisclaimer: always present
 - brandEvidence: quote visible logo/text when present, or state none readable
 - valuation for the identified object
-- insightfulPrompts: exactly 3 short questions the OWNER (who photographed this item) would ask YOU — and that you can answer from the ID, photo, and product knowledge. See user prompt rules.`;
+- insightfulPrompts: exactly 3 short questions someone would ask about this item that YOU can actually answer from the photo, ID, and product knowledge (not hands-on tests). See user prompt rules.`;
 
 export const OCR_PASS_PROMPT = `Read the product photo carefully. Extract ONLY text and logos you can actually see.
 
@@ -71,12 +71,12 @@ Produce a complete JSON appraisal.
 - Hotspots 3–5 if possible (mark logos as type "signature" when you see them).
 - Valuation, care, authenticity, sell tips.
 - insightfulPrompts: exactly 3 short questions (under ~12 words each).
-  Audience: the owner who already has this item and took the photo — NOT a shopper deciding whether to buy.
-  Each question must be something Curator can usefully answer from the photo/ID and general knowledge of this product (value range, model/variant, what marks mean, care for these materials, how/where to sell, rarity, common fakes for this type, typical age, accessories that belong with it).
-  Do NOT suggest questions that need hands-on testing or senses the photo cannot show (battery health, vibrations, noise, smell, "does it still run", grip feel, "is the motor strong").
-  Do NOT frame questions as pre-purchase inspection tips.
-  Good examples: "What is a fair sell price?", "How do I clean this safely?", "What model variant is this?", "Are the marks on it original?"
-  Bad examples: "Does the battery hold a charge?", "Any unusual vibrations?", "How does it feel when running?"`;
+  Audience: someone looking at this scanned item (owner or buyer is fine).
+  CRITICAL: every question must be answerable from the photo, identification, and general product knowledge — never something that needs hands-on testing, power-on, or senses the camera cannot capture.
+  Good topics: value / fair price, model or variant, what marks/logos mean, authenticity red flags visible on this type, care & materials, rarity, common fakes, era/age, where people sell this, accessories that usually come with it, how it compares to similar models.
+  Bad topics (never use): battery health/charge, vibrations, noise, smell, "does it work", motor strength, grip feel, torque, anything requiring plugging it in or running it.
+  Good examples: "What is a fair market price?", "How do I spot fakes of this model?", "What do these marks mean?", "How should this be cleaned?"
+  Bad examples: "Does the battery still hold a charge?", "Any unusual vibrations?", "How does it feel when running?"`;
 
 /** @deprecated name kept for imports */
 export const VISUAL_FACTS_PROMPT = OCR_PASS_PROMPT;
@@ -112,13 +112,13 @@ export function getAppraisalPrompt(
 const OWNER_PROMPT_BANNED =
   /\b(batter(y|ies)|vibrat|noise|sound|smell|odor|feel|grip|torque|motor strong|still (work|run)|hold(s)? a charge|charge last|unusual|plug it in|turn it on|does it work|how does it (run|feel)|should i buy|before (i )?buy)\b/i;
 
-const DEFAULT_OWNER_PROMPTS = [
-  "What is a fair price if I sell?",
+const DEFAULT_ANSWERABLE_PROMPTS = [
+  "What is a fair market price?",
   "How do I care for this item?",
   "What model or variant is this?",
 ];
 
-/** Keep only owner questions Curator can answer without hands-on testing. */
+/** Drop questions Curator cannot answer from a photo (hands-on / sensory tests). */
 export function sanitizeInsightfulPrompts(prompts: unknown): string[] {
   const list = Array.isArray(prompts) ? prompts.map(String) : [];
   const cleaned = list.filter((q) => {
@@ -126,7 +126,7 @@ export function sanitizeInsightfulPrompts(prompts: unknown): string[] {
     return s.length > 8 && s.length < 120 && !OWNER_PROMPT_BANNED.test(s);
   });
   if (cleaned.length >= 3) return cleaned.slice(0, 3);
-  return [...cleaned, ...DEFAULT_OWNER_PROMPTS].slice(0, 3);
+  return [...cleaned, ...DEFAULT_ANSWERABLE_PROMPTS].slice(0, 3);
 }
 
 /**

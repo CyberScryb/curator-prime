@@ -109,11 +109,11 @@ export const generateRestorationPreview = async (
   }
 };
 
-/** Drop questions that need physical testing or buyer-inspection framing. */
-function isAnswerableOwnerQuestion(q: string): boolean {
-  const s = q.toLowerCase();
+/** Drop questions that need physical testing the photo cannot support. */
+function isAnswerableFromPhoto(q: string): boolean {
   const banned =
-    /\b(batter(y|ies)|vibrat|noise|sound|smell|odor|feel|grip|torque|motor strong|still (work|run)|hold(s)? a charge|charge last|unusual|test it|plug it in|turn it on|does it work|how does it (run|feel)|inspect before buy|should i buy)\b/i;
+    /\b(batter(y|ies)|vibrat|noise|sound|smell|odor|feel|grip|torque|motor strong|still (work|run)|hold(s)? a charge|charge last|unusual|test it|plug it in|turn it on|does it work|how does it (run|feel))\b/i;
+  const s = q.trim();
   return s.length > 8 && s.length < 120 && !banned.test(s);
 }
 
@@ -124,14 +124,14 @@ export const generateDynamicPrompts = async (item: AppraisalResult): Promise<str
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         itemContext: item,
-        question: `Return ONLY a JSON array of exactly 3 short questions (under 12 words each) that the OWNER of this ${item.itemName} would ask Curator after scanning a photo they already own.
+        question: `Return ONLY a JSON array of exactly 3 short questions (under 12 words each) someone would ask about this ${item.itemName} after seeing a scan/photo.
 
 Rules:
-- Owner already has the item — not shopping / not pre-purchase inspection.
-- Only questions Curator can answer from the photo, identification, and general product knowledge.
-- Good topics: fair value/sell price, model or variant, what marks/logos mean, care & storage for these materials, where to sell, rarity, common fakes for this type, typical age/era, matching accessories.
-- Never ask about battery health, vibrations, noise, smell, "does it work", how it feels, or anything needing hands-on testing the photo cannot show.
-Example: ["What is a fair sell price?","How should I clean this?","What model is this likely?"]`,
+- Owner or buyer framing is fine.
+- ONLY questions Curator can answer from the photo, identification, and general product knowledge.
+- Good: fair price/value, model/variant, what marks mean, authenticity red flags for this type, care, rarity, common fakes, era, where people sell it, how it compares to similar models.
+- NEVER: battery health, vibrations, noise, smell, "does it work", motor strength, how it feels — anything needing hands-on testing the camera cannot show.
+Example: ["What is a fair market price?","How do I spot fakes?","What do these marks mean?"]`,
       }),
     });
     const data = await readApiJson<{ text?: string }>(response);
@@ -139,21 +139,23 @@ Example: ["What is a fair sell price?","How should I clean this?","What model is
     const parsed = JSON.parse(clean);
     const arr = (Array.isArray(parsed) ? parsed : parsed.prompts || [])
       .map(String)
-      .filter(isAnswerableOwnerQuestion);
+      .filter(isAnswerableFromPhoto);
     if (arr.length >= 3) return arr.slice(0, 3);
     if (arr.length > 0) {
       return [
         ...arr,
-        "What is a fair price if I sell?",
+        "What is a fair market price?",
         "How do I care for this?",
-        "What should I know about this model?",
-      ].filter(isAnswerableOwnerQuestion).slice(0, 3);
+        "What model is this likely?",
+      ]
+        .filter(isAnswerableFromPhoto)
+        .slice(0, 3);
     }
   } catch {
     /* fall through */
   }
   return [
-    "What is a fair price if I sell?",
+    "What is a fair market price?",
     "How do I care for this item?",
     "What model or variant is this?",
   ];
